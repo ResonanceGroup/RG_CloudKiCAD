@@ -429,8 +429,8 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
     }, [activeTab, commentMode, applyCommentModeToViewer]);
 
     useEffect(() => {
-        schematicViewerRef.current?.setCrossProbeEnabled(false);
-        pcbViewerRef.current?.setCrossProbeEnabled(false);
+        schematicViewerRef.current?.setCrossProbeEnabled(true);
+        pcbViewerRef.current?.setCrossProbeEnabled(true);
     }, [schematicViewerElement, pcbViewerElement]);
 
     // Submit Comment
