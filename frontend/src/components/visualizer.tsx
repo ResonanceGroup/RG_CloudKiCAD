@@ -9,7 +9,11 @@ import { CommentForm } from "./comment-form";
 import { CommentPanel } from "./comment-panel";
 import type { User } from "@/types/auth";
 import type { Comment, CommentContext } from "@/types/comments";
-import type { ECadViewerElement } from "@/types/ecad-viewer";
+import type {
+    CrossProbeContext,
+    ECadViewerElement,
+    KiCanvasSelectDetail,
+} from "@/types/ecad-viewer";
 
 const Model3DViewer = lazy(() =>
     import("./model-3d-viewer").then((module) => ({ default: module.Model3DViewer }))
@@ -52,6 +56,9 @@ interface CommentsSourceUrls {
 const isAbortError = (error: unknown): boolean =>
     error instanceof DOMException && error.name === "AbortError";
 
+const CROSS_PROBE_MAX_RETRIES = 12;
+const CROSS_PROBE_RETRY_DELAY_MS = 120;
+
 export function Visualizer({ projectId, user }: VisualizerProps) {
     const [schematicViewerElement, setSchematicViewerElement] = useState<ECadViewerElement | null>(null);
     const [pcbViewerElement, setPcbViewerElement] = useState<ECadViewerElement | null>(null);
@@ -93,8 +100,18 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
     const [commentsSourceUrls, setCommentsSourceUrls] = useState<CommentsSourceUrls | null>(null);
     const [isUrlsPopoverOpen, setIsUrlsPopoverOpen] = useState(false);
     const [copiedField, setCopiedField] = useState<string | null>(null);
-    const lastSchDesignatorRef = useRef<string | null>(null);
-    const lastPcbDesignatorRef = useRef<string | null>(null);
+    const lastCrossProbeRef = useRef<Record<CrossProbeContext, string | null>>({
+        SCH: null,
+        PCB: null,
+    });
+    const crossProbeRetryTimerRef = useRef<Record<CrossProbeContext, number | null>>({
+        SCH: null,
+        PCB: null,
+    });
+    const crossProbeRunIdRef = useRef<Record<CrossProbeContext, number>>({
+        SCH: 0,
+        PCB: 0,
+    });
     const activeCommentContext: CommentContext | null = activeTab === "sch" ? "SCH" : activeTab === "pcb" ? "PCB" : null;
 
     const applyCommentModeToViewer = useCallback((viewer: ECadViewerElement | null, enabled: boolean) => {
@@ -177,30 +194,74 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
         return findDesignator(item);
     }, [normalizeDesignator]);
 
+    const getCrossProbeTargetContext = useCallback(
+        (sourceContext: CrossProbeContext): CrossProbeContext =>
+            sourceContext === "SCH" ? "PCB" : "SCH",
+        [],
+    );
+
+    const clearCrossProbeRetry = useCallback((targetContext: CrossProbeContext) => {
+        const timerId = crossProbeRetryTimerRef.current[targetContext];
+        if (timerId !== null) {
+            window.clearTimeout(timerId);
+            crossProbeRetryTimerRef.current[targetContext] = null;
+        }
+    }, []);
+
     const runCrossProbe = useCallback(
         function runCrossProbe(
             targetViewer: ECadViewerElement | null,
             sourceContext: "SCH" | "PCB",
             designator: string,
-            attempts = 0
+            attempts = 0,
+            runId?: number,
         ) {
-            if (!targetViewer) return;
+            const targetContext = getCrossProbeTargetContext(sourceContext);
+
+            if (attempts === 0) {
+                clearCrossProbeRetry(targetContext);
+                crossProbeRunIdRef.current[targetContext] += 1;
+                runId = crossProbeRunIdRef.current[targetContext];
+            }
+
+            if (!targetViewer) {
+                clearCrossProbeRetry(targetContext);
+                return;
+            }
+
+            if (!runId || crossProbeRunIdRef.current[targetContext] !== runId) {
+                return;
+            }
+
             const result = targetViewer.requestCrossProbe({
                 sourceContext,
-                targetContext: sourceContext === "SCH" ? "PCB" : "SCH",
+                targetContext,
                 mode: "select",
                 kind: "designator",
                 value: designator,
                 designator,
             });
 
-            if (!result.resolved && result.reason === "target-not-available" && attempts < 12) {
-                window.setTimeout(() => {
-                    runCrossProbe(targetViewer, sourceContext, designator, attempts + 1);
-                }, 120);
+            if (
+                !result.resolved &&
+                result.reason === "target-not-available" &&
+                attempts < CROSS_PROBE_MAX_RETRIES
+            ) {
+                crossProbeRetryTimerRef.current[targetContext] = window.setTimeout(() => {
+                    runCrossProbe(
+                        targetViewer,
+                        sourceContext,
+                        designator,
+                        attempts + 1,
+                        runId,
+                    );
+                }, CROSS_PROBE_RETRY_DELAY_MS);
+                return;
             }
+
+            clearCrossProbeRetry(targetContext);
         },
-        [],
+        [clearCrossProbeRetry, getCrossProbeTargetContext],
     );
 
     const copyToClipboard = async (label: string, value: string) => {
@@ -441,7 +502,18 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
         setShowPushDialog(false);
         setIsUrlsPopoverOpen(false);
         setCopiedField(null);
-    }, [projectId]);
+        lastCrossProbeRef.current = { SCH: null, PCB: null };
+        clearCrossProbeRetry("SCH");
+        clearCrossProbeRetry("PCB");
+        crossProbeRunIdRef.current = { SCH: 0, PCB: 0 };
+    }, [projectId, clearCrossProbeRetry]);
+
+    useEffect(() => {
+        return () => {
+            clearCrossProbeRetry("SCH");
+            clearCrossProbeRetry("PCB");
+        };
+    }, [clearCrossProbeRetry]);
 
     // Event Listeners for ecad-viewer
     useEffect(() => {
@@ -532,21 +604,23 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
         const pcbViewer = pcbViewerElement;
         if (!schematicViewer && !pcbViewer) return;
 
-        const onSchematicSelect = (event: Event) => {
-            const detail = (event as CustomEvent<{ item?: unknown }>).detail;
+        const handleCrossProbeSelection = (
+            fallbackSourceContext: CrossProbeContext,
+            targetViewer: ECadViewerElement | null,
+            event: Event,
+        ) => {
+            const detail = (event as CustomEvent<KiCanvasSelectDetail>).detail;
+            const sourceContext = detail?.sourceContext ?? fallbackSourceContext;
             const designator = extractDesignatorFromSelection(detail?.item);
             if (!designator) return;
-            lastSchDesignatorRef.current = designator;
-            runCrossProbe(pcbViewerRef.current, "SCH", designator);
+            lastCrossProbeRef.current[sourceContext] = designator;
+            runCrossProbe(targetViewer, sourceContext, designator);
         };
 
-        const onPcbSelect = (event: Event) => {
-            const detail = (event as CustomEvent<{ item?: unknown }>).detail;
-            const designator = extractDesignatorFromSelection(detail?.item);
-            if (!designator) return;
-            lastPcbDesignatorRef.current = designator;
-            runCrossProbe(schematicViewerRef.current, "PCB", designator);
-        };
+        const onSchematicSelect = (event: Event) =>
+            handleCrossProbeSelection("SCH", pcbViewerRef.current, event);
+        const onPcbSelect = (event: Event) =>
+            handleCrossProbeSelection("PCB", schematicViewerRef.current, event);
 
         schematicViewer?.addEventListener("kicanvas:select", onSchematicSelect as EventListener);
         pcbViewer?.addEventListener("kicanvas:select", onPcbSelect as EventListener);
@@ -558,10 +632,10 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
     }, [schematicViewerElement, pcbViewerElement, extractDesignatorFromSelection, runCrossProbe]);
 
     useEffect(() => {
-        if (activeTab === "pcb" && lastSchDesignatorRef.current) {
-            runCrossProbe(pcbViewerRef.current, "SCH", lastSchDesignatorRef.current);
-        } else if (activeTab === "sch" && lastPcbDesignatorRef.current) {
-            runCrossProbe(schematicViewerRef.current, "PCB", lastPcbDesignatorRef.current);
+        if (activeTab === "pcb" && lastCrossProbeRef.current.SCH) {
+            runCrossProbe(pcbViewerRef.current, "SCH", lastCrossProbeRef.current.SCH);
+        } else if (activeTab === "sch" && lastCrossProbeRef.current.PCB) {
+            runCrossProbe(schematicViewerRef.current, "PCB", lastCrossProbeRef.current.PCB);
         }
     }, [activeTab, runCrossProbe, schematicViewerElement, pcbViewerElement]);
 
