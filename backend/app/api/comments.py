@@ -9,9 +9,9 @@ import os
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app.services import project_service
+from app.api._helpers import get_project_or_404
 from app.services.comments_store_service import comments_store
 
 router = APIRouter()
@@ -58,7 +58,7 @@ class Comment(BaseModel):
     context: str
     location: CommentLocation
     content: str
-    replies: List[CommentReply] = []
+    replies: List[CommentReply] = Field(default_factory=list)
 
 
 class CommentsMeta(BaseModel):
@@ -67,26 +67,26 @@ class CommentsMeta(BaseModel):
 
 
 class CommentsFile(BaseModel):
-    meta: CommentsMeta = CommentsMeta()
-    comments: List[Comment] = []
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-
-def _get_project_or_404(project_id: str):
-    project = project_service.get_project_by_id(project_id)
-
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    return project
+    meta: CommentsMeta = Field(default_factory=CommentsMeta)
+    comments: List[Comment] = Field(default_factory=list)
 
 
 def _normalize_author(author: Optional[str]) -> str:
     return (author or "anonymous").strip() or "anonymous"
+
+
+def _normalize_context(context: str) -> str:
+    normalized = context.upper().strip()
+    if normalized not in {"PCB", "SCH"}:
+        raise HTTPException(status_code=400, detail="Context must be 'PCB' or 'SCH'")
+    return normalized
+
+
+def _normalize_content(content: str, *, field: str = "content") -> str:
+    normalized = content.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail=f"{field.capitalize()} cannot be empty")
+    return normalized
 
 
 # ============================================================
@@ -98,7 +98,7 @@ async def get_comments(project_id: str):
     """
     Get all comments for a project from DB snapshot.
     """
-    project = _get_project_or_404(project_id)
+    project = get_project_or_404(project_id)
     return comments_store.get_comments_file(project.id, project.path)
 
 
@@ -107,18 +107,17 @@ async def create_comment(project_id: str, request: CreateCommentRequest):
     """
     Create a new comment on the design.
     """
-    project = _get_project_or_404(project_id)
+    project = get_project_or_404(project_id)
 
-    context = request.context.upper()
-    if context not in {"PCB", "SCH"}:
-        raise HTTPException(status_code=400, detail="Context must be 'PCB' or 'SCH'")
+    context = _normalize_context(request.context)
+    content = _normalize_content(request.content)
 
     return comments_store.create_comment(
         project_id=project.id,
         project_path=project.path,
         context=context,
         location=request.location.model_dump(),
-        content=request.content,
+        content=content,
         author=_normalize_author(request.author),
     )
 
@@ -128,7 +127,7 @@ async def update_comment(project_id: str, comment_id: str, request: UpdateCommen
     """
     Update a comment's status (e.g., resolve it).
     """
-    project = _get_project_or_404(project_id)
+    project = get_project_or_404(project_id)
 
     if request.status is None:
         raise HTTPException(status_code=400, detail="No update fields provided")
@@ -155,13 +154,13 @@ async def add_reply(project_id: str, comment_id: str, request: CreateReplyReques
     """
     Add a reply to an existing comment.
     """
-    project = _get_project_or_404(project_id)
+    project = get_project_or_404(project_id)
 
     result = comments_store.add_reply(
         project_id=project.id,
         project_path=project.path,
         comment_id=comment_id,
-        content=request.content,
+        content=_normalize_content(request.content),
         author=_normalize_author(request.author),
     )
 
@@ -177,7 +176,7 @@ async def delete_comment(project_id: str, comment_id: str):
     """
     Delete a comment.
     """
-    project = _get_project_or_404(project_id)
+    project = get_project_or_404(project_id)
 
     deleted = comments_store.delete_comment(
         project_id=project.id,
@@ -201,7 +200,7 @@ async def push_comments(project_id: str):
     Export DB snapshot to comments.json artifact only.
     Git commit/push is intentionally left to the user workflow.
     """
-    project = _get_project_or_404(project_id)
+    project = get_project_or_404(project_id)
 
     try:
         comments_path = comments_store.export_comments_json(project.id, project.path)

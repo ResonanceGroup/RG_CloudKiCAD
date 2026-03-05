@@ -1,15 +1,23 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { lazy, Suspense, useEffect, useState, useCallback, useRef } from "react";
 import * as React from "react";
 import { Cpu, Box, FileText, MessageSquarePlus, MessageSquare, GitBranch, CircuitBoard, Link2, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Model3DViewer } from "./model-3d-viewer";
 import { CommentOverlay } from "./comment-overlay";
 import { CommentForm } from "./comment-form";
 import { CommentPanel } from "./comment-panel";
 import type { User } from "@/types/auth";
 import type { Comment, CommentContext } from "@/types/comments";
+import type {
+    CrossProbeContext,
+    ECadViewerElement,
+    KiCanvasSelectDetail,
+} from "@/types/ecad-viewer";
+
+const Model3DViewer = lazy(() =>
+    import("./model-3d-viewer").then((module) => ({ default: module.Model3DViewer }))
+);
 
 // Wrapper to set blob properties immediately via useLayoutEffect
 const EcadBlob = ({ filename, content }: { filename: string; content: string }) => {
@@ -45,19 +53,25 @@ interface CommentsSourceUrls {
     delete_url_template: string;
 }
 
+const isAbortError = (error: unknown): boolean =>
+    error instanceof DOMException && error.name === "AbortError";
+
+const CROSS_PROBE_MAX_RETRIES = 12;
+const CROSS_PROBE_RETRY_DELAY_MS = 120;
+
 export function Visualizer({ projectId, user }: VisualizerProps) {
-    const [schematicViewerElement, setSchematicViewerElement] = useState<HTMLElement | null>(null);
-    const [pcbViewerElement, setPcbViewerElement] = useState<HTMLElement | null>(null);
-    const schematicViewerRef = useRef<HTMLElement | null>(null);
-    const pcbViewerRef = useRef<HTMLElement | null>(null);
+    const [schematicViewerElement, setSchematicViewerElement] = useState<ECadViewerElement | null>(null);
+    const [pcbViewerElement, setPcbViewerElement] = useState<ECadViewerElement | null>(null);
+    const schematicViewerRef = useRef<ECadViewerElement | null>(null);
+    const pcbViewerRef = useRef<ECadViewerElement | null>(null);
 
     // Callback refs to sync state and refs
-    const setSchematicViewerRef = useCallback((node: HTMLElement | null) => {
+    const setSchematicViewerRef = useCallback((node: ECadViewerElement | null) => {
         schematicViewerRef.current = node;
         setSchematicViewerElement(node);
     }, []);
 
-    const setPcbViewerRef = useCallback((node: HTMLElement | null) => {
+    const setPcbViewerRef = useCallback((node: ECadViewerElement | null) => {
         pcbViewerRef.current = node;
         setPcbViewerElement(node);
     }, []);
@@ -86,13 +100,24 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
     const [commentsSourceUrls, setCommentsSourceUrls] = useState<CommentsSourceUrls | null>(null);
     const [isUrlsPopoverOpen, setIsUrlsPopoverOpen] = useState(false);
     const [copiedField, setCopiedField] = useState<string | null>(null);
+    const lastCrossProbeRef = useRef<Record<CrossProbeContext, string | null>>({
+        SCH: null,
+        PCB: null,
+    });
+    const crossProbeRetryTimerRef = useRef<Record<CrossProbeContext, number | null>>({
+        SCH: null,
+        PCB: null,
+    });
+    const crossProbeRunIdRef = useRef<Record<CrossProbeContext, number>>({
+        SCH: 0,
+        PCB: 0,
+    });
     const activeCommentContext: CommentContext | null = activeTab === "sch" ? "SCH" : activeTab === "pcb" ? "PCB" : null;
 
-    const applyCommentModeToViewer = useCallback((viewer: HTMLElement | null, enabled: boolean) => {
+    const applyCommentModeToViewer = useCallback((viewer: ECadViewerElement | null, enabled: boolean) => {
         if (!viewer) return;
-        const viewerAny = viewer as any;
-        if (viewerAny.setCommentMode) {
-            viewerAny.setCommentMode(enabled);
+        if (viewer.setCommentMode) {
+            viewer.setCommentMode(enabled);
             return;
         }
 
@@ -102,6 +127,142 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
             viewer.removeAttribute("comment-mode");
         }
     }, []);
+
+    const normalizeDesignator = useCallback((value: unknown): string | null => {
+        if (typeof value !== "string") return null;
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        return /^[A-Za-z]+\d+/.test(trimmed) ? trimmed : null;
+    }, []);
+
+    const extractDesignatorFromSelection = useCallback((item: unknown): string | null => {
+        const findDesignator = (value: unknown, depth = 0): string | null => {
+            if (!value || typeof value !== "object" || depth > 3) return null;
+            const entry = value as Record<string, unknown>;
+
+            const direct = [
+                entry.reference,
+                entry.Reference,
+                entry.designator,
+                entry.elementRef,
+                entry.ref,
+                entry.Ref,
+            ];
+            for (const candidate of direct) {
+                const designator = normalizeDesignator(candidate);
+                if (designator) return designator;
+            }
+
+            if (typeof entry.get_property_text === "function") {
+                try {
+                    const fromProperty = normalizeDesignator(
+                        (entry.get_property_text as (name: string) => unknown)("Reference")
+                    );
+                    if (fromProperty) return fromProperty;
+                } catch {
+                    // noop
+                }
+            }
+
+            const properties = entry.properties;
+            if (properties instanceof Map) {
+                const refProp = properties.get("Reference");
+                if (refProp && typeof refProp === "object") {
+                    const propEntry = refProp as Record<string, unknown>;
+                    const fromMap = normalizeDesignator(
+                        propEntry.shown_text ?? propEntry.text ?? propEntry.value
+                    );
+                    if (fromMap) return fromMap;
+                }
+            }
+
+            const defaultInstance = entry.default_instance;
+            if (defaultInstance && typeof defaultInstance === "object") {
+                const fromDefault = normalizeDesignator(
+                    (defaultInstance as Record<string, unknown>).reference
+                );
+                if (fromDefault) return fromDefault;
+            }
+
+            return (
+                findDesignator(entry.parent, depth + 1) ||
+                findDesignator(entry.item, depth + 1) ||
+                findDesignator(entry.context, depth + 1)
+            );
+        };
+
+        return findDesignator(item);
+    }, [normalizeDesignator]);
+
+    const getCrossProbeTargetContext = useCallback(
+        (sourceContext: CrossProbeContext): CrossProbeContext =>
+            sourceContext === "SCH" ? "PCB" : "SCH",
+        [],
+    );
+
+    const clearCrossProbeRetry = useCallback((targetContext: CrossProbeContext) => {
+        const timerId = crossProbeRetryTimerRef.current[targetContext];
+        if (timerId !== null) {
+            window.clearTimeout(timerId);
+            crossProbeRetryTimerRef.current[targetContext] = null;
+        }
+    }, []);
+
+    const runCrossProbe = useCallback(
+        function runCrossProbe(
+            targetViewer: ECadViewerElement | null,
+            sourceContext: "SCH" | "PCB",
+            designator: string,
+            attempts = 0,
+            runId?: number,
+        ) {
+            const targetContext = getCrossProbeTargetContext(sourceContext);
+
+            if (attempts === 0) {
+                clearCrossProbeRetry(targetContext);
+                crossProbeRunIdRef.current[targetContext] += 1;
+                runId = crossProbeRunIdRef.current[targetContext];
+            }
+
+            if (!targetViewer) {
+                clearCrossProbeRetry(targetContext);
+                return;
+            }
+
+            if (!runId || crossProbeRunIdRef.current[targetContext] !== runId) {
+                return;
+            }
+
+            const result = targetViewer.requestCrossProbe({
+                sourceContext,
+                targetContext,
+                mode: "select",
+                kind: "designator",
+                value: designator,
+                designator,
+            });
+
+            if (
+                !result.resolved &&
+                result.reason === "target-not-available" &&
+                attempts < CROSS_PROBE_MAX_RETRIES
+            ) {
+                crossProbeRetryTimerRef.current[targetContext] = window.setTimeout(() => {
+                    runCrossProbe(
+                        targetViewer,
+                        sourceContext,
+                        designator,
+                        attempts + 1,
+                        runId,
+                    );
+                }, CROSS_PROBE_RETRY_DELAY_MS);
+                return;
+            }
+
+            clearCrossProbeRetry(targetContext);
+        },
+        [clearCrossProbeRetry, getCrossProbeTargetContext],
+    );
 
     const copyToClipboard = async (label: string, value: string) => {
         try {
@@ -115,6 +276,9 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
 
     // Initial Data Fetch
     useEffect(() => {
+        const controller = new AbortController();
+        const signal = controller.signal;
+
         const fetchData = async () => {
             setLoading(true);
             const baseUrl = `/api/projects/${projectId}`;
@@ -122,10 +286,10 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
             try {
                 // Parallel fetch for main assets (excluding schematic and PCB content for now)
                 const [modelRes, ibomRes, commentsRes, filesRes] = await Promise.allSettled([
-                    fetch(`${baseUrl}/3d-model`),
-                    fetch(`${baseUrl}/ibom`),
-                    fetch(`/api/projects/${projectId}/comments`),
-                    fetch(`${baseUrl}/files?type=design`)
+                    fetch(`${baseUrl}/3d-model`, { signal }),
+                    fetch(`${baseUrl}/ibom`, { signal }),
+                    fetch(`/api/projects/${projectId}/comments`, { signal }),
+                    fetch(`${baseUrl}/files?type=design`, { signal })
                 ]);
 
                 // Handle 3D
@@ -133,6 +297,7 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                 if (filesRes.status === "fulfilled" && filesRes.value.ok) {
                     try {
                         const files = await filesRes.value.json();
+                        if (signal.aborted) return;
                         const glbFile = files.find((f: any) =>
                             f.path.toLowerCase().startsWith("3dmodel/") &&
                             f.name.toLowerCase().endsWith(".glb")
@@ -141,7 +306,9 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                             glbUrl = `${baseUrl}/asset/Design-Outputs/${glbFile.path}`;
                         }
                     } catch (e) {
-                        console.warn("Error parsing design files", e);
+                        if (!isAbortError(e)) {
+                            console.warn("Error parsing design files", e);
+                        }
                     }
                 }
 
@@ -149,110 +316,166 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                     setModelUrl(glbUrl);
                 } else if (modelRes.status === "fulfilled" && modelRes.value.ok) {
                     setModelUrl(`${baseUrl}/3d-model`);
+                } else {
+                    setModelUrl(null);
                 }
 
                 // Handle iBoM
                 if (ibomRes.status === "fulfilled" && ibomRes.value.ok) {
                     setIbomUrl(`${baseUrl}/ibom`);
+                } else {
+                    setIbomUrl(null);
                 }
 
                 // Handle Comments
                 if (commentsRes.status === "fulfilled" && commentsRes.value.ok) {
                     const cData = await commentsRes.value.json();
+                    if (signal.aborted) return;
                     setComments(cData.comments || []);
+                } else {
+                    setComments([]);
                 }
 
                 try {
-                    const sourceResponse = await fetch(`/api/projects/${projectId}/comments/source-urls`);
+                    const sourceResponse = await fetch(`/api/projects/${projectId}/comments/source-urls`, { signal });
 
                     if (sourceResponse.ok) {
                         const sourceData = await sourceResponse.json();
+                        if (signal.aborted) return;
                         setCommentsSourceUrls(sourceData);
+                    } else {
+                        setCommentsSourceUrls(null);
                     }
                 } catch (sourceError) {
-                    console.warn("Failed to load comments source URLs", sourceError);
+                    if (!isAbortError(sourceError)) {
+                        console.warn("Failed to load comments source URLs", sourceError);
+                    }
                 }
 
             } catch (err) {
-                console.error("Error loading visualizer data", err);
+                if (!isAbortError(err)) {
+                    console.error("Error loading visualizer data", err);
+                }
             } finally {
-                setLoading(false);
+                if (!signal.aborted) {
+                    setLoading(false);
+                }
             }
         };
 
-        fetchData();
+        void fetchData();
+        return () => controller.abort();
     }, [projectId]);
 
     // Lazy load schematic content when schematic tab is first accessed
     useEffect(() => {
         if (activeTab === "sch" && !schematicContentLoaded) {
+            const controller = new AbortController();
+            const signal = controller.signal;
+
             const loadSchematic = async () => {
                 try {
                     const baseUrl = `/api/projects/${projectId}`;
 
                     const delay = 150;
                     await new Promise(resolve => setTimeout(resolve, delay));
+                    if (signal.aborted) return;
 
                     const [schRes, subsheetsRes] = await Promise.allSettled([
-                        fetch(`${baseUrl}/schematic`),
-                        fetch(`${baseUrl}/schematic/subsheets`)
+                        fetch(`${baseUrl}/schematic`, { signal }),
+                        fetch(`${baseUrl}/schematic/subsheets`, { signal })
                     ]);
 
                     // Handle Schematic
                     if (schRes.status === "fulfilled" && schRes.value.ok) {
                         const schematicText = await schRes.value.text();
+                        if (signal.aborted) return;
                         setSchematicContent(schematicText);
                     } else {
                         console.error("Schematic not found");
+                        setSchematicContent(null);
                     }
 
                     // Handle Subsheets
                     if (subsheetsRes.status === "fulfilled" && subsheetsRes.value.ok) {
                         const data = await subsheetsRes.value.json();
+                        if (signal.aborted) return;
                         if (data.files?.length) {
-                            const subsheetPromises = data.files.map(async (f: any) => {
-                                const cRes = await fetch(f.url);
-                                let filename = f.name || f.path || f.url.split('/').pop() || "subsheet.kicad_sch";
+                            const subsheetResults = await Promise.allSettled(data.files.map(async (f: any) => {
+                                const cRes = await fetch(f.url, { signal });
+                                if (!cRes.ok) {
+                                    throw new Error(`Failed to load subsheet: ${f.url}`);
+                                }
+                                let filename = f.name || f.path || f.url.split("/")?.pop() || "subsheet.kicad_sch";
                                 if (!filename.endsWith('.kicad_sch')) filename += '.kicad_sch';
-                                if (!filename.includes('/') && f.url.includes('Subsheets')) filename = `Subsheets/${filename}`;
+                                if (!filename.includes("/") && f.url.includes("Subsheets")) filename = `Subsheets/${filename}`;
                                 return { filename, content: await cRes.text() };
-                            });
-                            setSubsheets(await Promise.all(subsheetPromises));
+                            }));
+
+                            if (signal.aborted) return;
+
+                            const loadedSubsheets = subsheetResults
+                                .filter((result): result is PromiseFulfilledResult<{ filename: string; content: string }> => result.status === "fulfilled")
+                                .map((result) => result.value);
+                            setSubsheets(loadedSubsheets);
+
+                            subsheetResults
+                                .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+                                .forEach((result) => {
+                                    console.warn("Failed to load one subsheet", result.reason);
+                                });
                         }
+                    } else {
+                        setSubsheets([]);
                     }
                 } catch (err) {
-                    console.error("Error loading schematic content", err);
+                    if (!isAbortError(err)) {
+                        console.error("Error loading schematic content", err);
+                    }
                 } finally {
-                    setSchematicContentLoaded(true);
+                    if (!signal.aborted) {
+                        setSchematicContentLoaded(true);
+                    }
                 }
             };
 
-            loadSchematic();
+            void loadSchematic();
+            return () => controller.abort();
         }
     }, [activeTab, schematicContentLoaded, projectId]);
 
     // Lazy load PCB content when PCB tab is first accessed
     useEffect(() => {
         if (activeTab === "pcb" && !pcbContentLoaded) {
+            const controller = new AbortController();
+            const signal = controller.signal;
+
             const loadPcb = async () => {
                 try {
                     const baseUrl = `/api/projects/${projectId}`;
-                    const pcbRes = await fetch(`${baseUrl}/pcb`);
+                    const pcbRes = await fetch(`${baseUrl}/pcb`, { signal });
 
                     if (pcbRes.ok) {
                         const pcbText = await pcbRes.text();
+                        if (signal.aborted) return;
                         setPcbContent(pcbText);
                     } else {
                         console.error("PCB not found");
+                        setPcbContent(null);
                     }
                 } catch (err) {
-                    console.error("Error loading PCB content", err);
+                    if (!isAbortError(err)) {
+                        console.error("Error loading PCB content", err);
+                    }
                 } finally {
-                    setPcbContentLoaded(true);
+                    if (!signal.aborted) {
+                        setPcbContentLoaded(true);
+                    }
                 }
             };
 
-            loadPcb();
+            void loadPcb();
+            return () => controller.abort();
         }
     }, [activeTab, pcbContentLoaded, projectId]);
 
@@ -260,7 +483,37 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
     useEffect(() => {
         setSchematicContentLoaded(false);
         setPcbContentLoaded(false);
-    }, [projectId]);
+        setSchematicContent(null);
+        setSubsheets([]);
+        setPcbContent(null);
+        setModelUrl(null);
+        setIbomUrl(null);
+        setComments([]);
+        setCommentsSourceUrls(null);
+        setActivePage("root.kicad_sch");
+        setCommentMode(false);
+        setShowCommentForm(false);
+        setShowCommentPanel(false);
+        setPendingLocation(null);
+        setPendingContext("PCB");
+        setIsSubmittingComment(false);
+        setIsPushingComments(false);
+        setPushMessage(null);
+        setShowPushDialog(false);
+        setIsUrlsPopoverOpen(false);
+        setCopiedField(null);
+        lastCrossProbeRef.current = { SCH: null, PCB: null };
+        clearCrossProbeRetry("SCH");
+        clearCrossProbeRetry("PCB");
+        crossProbeRunIdRef.current = { SCH: 0, PCB: 0 };
+    }, [projectId, clearCrossProbeRetry]);
+
+    useEffect(() => {
+        return () => {
+            clearCrossProbeRetry("SCH");
+            clearCrossProbeRetry("PCB");
+        };
+    }, [clearCrossProbeRetry]);
 
     // Event Listeners for ecad-viewer
     useEffect(() => {
@@ -341,6 +594,51 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
         }
     }, [activeTab, commentMode, applyCommentModeToViewer]);
 
+    useEffect(() => {
+        schematicViewerRef.current?.setCrossProbeEnabled(true);
+        pcbViewerRef.current?.setCrossProbeEnabled(true);
+    }, [schematicViewerElement, pcbViewerElement]);
+
+    useEffect(() => {
+        const schematicViewer = schematicViewerElement;
+        const pcbViewer = pcbViewerElement;
+        if (!schematicViewer && !pcbViewer) return;
+
+        const handleCrossProbeSelection = (
+            fallbackSourceContext: CrossProbeContext,
+            targetViewer: ECadViewerElement | null,
+            event: Event,
+        ) => {
+            const detail = (event as CustomEvent<KiCanvasSelectDetail>).detail;
+            const sourceContext = detail?.sourceContext ?? fallbackSourceContext;
+            const designator = extractDesignatorFromSelection(detail?.item);
+            if (!designator) return;
+            lastCrossProbeRef.current[sourceContext] = designator;
+            runCrossProbe(targetViewer, sourceContext, designator);
+        };
+
+        const onSchematicSelect = (event: Event) =>
+            handleCrossProbeSelection("SCH", pcbViewerRef.current, event);
+        const onPcbSelect = (event: Event) =>
+            handleCrossProbeSelection("PCB", schematicViewerRef.current, event);
+
+        schematicViewer?.addEventListener("kicanvas:select", onSchematicSelect as EventListener);
+        pcbViewer?.addEventListener("kicanvas:select", onPcbSelect as EventListener);
+
+        return () => {
+            schematicViewer?.removeEventListener("kicanvas:select", onSchematicSelect as EventListener);
+            pcbViewer?.removeEventListener("kicanvas:select", onPcbSelect as EventListener);
+        };
+    }, [schematicViewerElement, pcbViewerElement, extractDesignatorFromSelection, runCrossProbe]);
+
+    useEffect(() => {
+        if (activeTab === "pcb" && lastCrossProbeRef.current.SCH) {
+            runCrossProbe(pcbViewerRef.current, "SCH", lastCrossProbeRef.current.SCH);
+        } else if (activeTab === "sch" && lastCrossProbeRef.current.PCB) {
+            runCrossProbe(schematicViewerRef.current, "PCB", lastCrossProbeRef.current.PCB);
+        }
+    }, [activeTab, runCrossProbe, schematicViewerElement, pcbViewerElement]);
+
     // Submit Comment
     const handleSubmitComment = async (content: string) => {
         if (!pendingLocation) return;
@@ -385,14 +683,12 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
         const viewer = comment.context === "SCH" ? schematicViewerRef.current : pcbViewerRef.current;
         if (!viewer) return;
 
-        const viewerAny = viewer as any;
-
         if (comment.context === "SCH" && comment.location.page) {
-            viewerAny.switchPage(comment.location.page);
+            viewer.switchPage(comment.location.page);
         }
 
-        if (viewerAny.zoomToLocation) {
-            viewerAny.zoomToLocation(comment.location.x, comment.location.y);
+        if (viewer.zoomToLocation) {
+            viewer.zoomToLocation(comment.location.x, comment.location.y);
         }
     };
 
@@ -668,6 +964,8 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                             <ecad-viewer
                                 ref={setSchematicViewerRef}
                                 style={{ width: '100%', height: '100%' }}
+                                show-header="true"
+                                header-sections="beginning,end"
                                 key={`schematic-viewer-${projectId}`}
                             >
                                 <EcadBlob filename="root.kicad_sch" content={schematicContent} />
@@ -692,6 +990,8 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                             <ecad-viewer
                                 ref={setPcbViewerRef}
                                 style={{ width: '100%', height: '100%' }}
+                                show-header="true"
+                                header-sections="beginning,end"
                                 key={`pcb-viewer-${projectId}`}
                             >
                                 <EcadBlob filename="board.kicad_pcb" content={pcbContent} />
@@ -722,7 +1022,13 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                 {/* 3D View */}
                 {activeTab === "3d" && (
                     <div className="absolute inset-0 z-20 bg-background">
-                        {modelUrl ? <Model3DViewer modelUrl={modelUrl} /> : <div className="p-10">No 3D Model</div>}
+                        {modelUrl ? (
+                            <Suspense fallback={<div className="p-10">Loading 3D Viewer...</div>}>
+                                <Model3DViewer modelUrl={modelUrl} sceneKey={`project:${projectId}:tab:3d`} />
+                            </Suspense>
+                        ) : (
+                            <div className="p-10">No 3D Model</div>
+                        )}
                     </div>
                 )}
 
