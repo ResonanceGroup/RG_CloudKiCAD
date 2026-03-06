@@ -1,15 +1,21 @@
-from fastapi import APIRouter, HTTPException
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException
 import os
 import subprocess
 from pathlib import Path
 from pydantic import BaseModel
 import logging
 
+from app.core.roles import Role, normalize_role
+from app.core.security import AuthenticatedUser, require_admin
+from app.services import access_service
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 # In Docker, home is /root. SSH keys are usually in ~/.ssh
 # We use resolve() to get the absolute path to avoid any ambiguity
@@ -23,6 +29,16 @@ class SSHKeyResponse(BaseModel):
 
 class GenerateSSHKeyRequest(BaseModel):
     email: str = "kicad-prism@example.com"
+
+
+class RoleAssignmentResponse(BaseModel):
+    email: str
+    role: Role
+    source: str
+
+
+class UpsertRoleRequest(BaseModel):
+    role: str
 
 @router.get("/ssh-key", response_model=SSHKeyResponse)
 async def get_ssh_key():
@@ -104,3 +120,39 @@ async def generate_ssh_key(request: GenerateSSHKeyRequest):
     except Exception as e:
         logger.error(f"An unexpected error occurred during key generation: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+@router.get("/access/users", response_model=List[RoleAssignmentResponse])
+async def list_access_users():
+    return [RoleAssignmentResponse(**item) for item in access_service.list_role_assignments()]
+
+
+@router.put("/access/users/{email}", response_model=RoleAssignmentResponse)
+async def upsert_access_user(
+    email: str,
+    request: UpsertRoleRequest,
+    user: AuthenticatedUser = Depends(require_admin),
+):
+    normalized_role = normalize_role(request.role)
+    if normalized_role is None:
+        raise HTTPException(status_code=400, detail="Invalid role. Must be admin, designer, or viewer.")
+
+    try:
+        assignment = access_service.upsert_user_role(email=email, role=normalized_role, updated_by=user.email)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    return RoleAssignmentResponse(**assignment)
+
+
+@router.delete("/access/users/{email}")
+async def delete_access_user(email: str, user: AuthenticatedUser = Depends(require_admin)):
+    try:
+        deleted = access_service.delete_user_role(email=email, updated_by=user.email)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="User role assignment not found")
+
+    return {"deleted": email.strip().lower()}

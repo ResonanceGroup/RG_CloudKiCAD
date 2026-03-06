@@ -9,28 +9,16 @@ import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { Toaster } from 'sonner';
 import { Input } from '@/components/ui/input';
 import { Search } from 'lucide-react';
-import { fetchJson } from '@/lib/api';
+import { ApiHttpError, fetchApi, fetchJson } from '@/lib/api';
 import prismLogoMark from './assets/branding/kicad-prism/kicad-prism-icon.svg';
 
 
 
 function App() {
-    const [user, setUser] = useState<User | null>(() => {
-        // Restore user from localStorage on initial load
-        if (typeof window !== 'undefined') {
-            const saved = localStorage.getItem('auth_user');
-            if (saved) {
-                try {
-                    return JSON.parse(saved);
-                } catch {
-                    return null;
-                }
-            }
-        }
-        return null;
-    });
+    const [user, setUser] = useState<User | null>(null);
     const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
     const [loading, setLoading] = useState(true);
+    const [authError, setAuthError] = useState<string | null>(null);
     const [workspaceSearchQuery, setWorkspaceSearchQuery] = useState("");
 
     // Fetch auth configuration on mount
@@ -49,12 +37,36 @@ function App() {
                 }
 
                 setAuthConfig(config);
+                setAuthError(null);
 
                 // If auth is disabled, auto-login as guest
                 if (!config.auth_enabled) {
-                    const guestUser = { name: 'Guest', email: 'guest@local' };
+                    const guestUser: User = { name: 'Guest', email: 'guest@local', role: 'viewer' };
                     setUser(guestUser);
-                    localStorage.setItem('auth_user', JSON.stringify(guestUser));
+                    return;
+                }
+
+                try {
+                    const currentUser = await fetchJson<User>(
+                        '/api/auth/me',
+                        { signal: controller.signal },
+                        'Failed to fetch current user'
+                    );
+                    if (controller.signal.aborted) {
+                        return;
+                    }
+                    setUser(currentUser);
+                    setAuthError(null);
+                } catch (err) {
+                    if (controller.signal.aborted) {
+                        return;
+                    }
+                    if (err instanceof ApiHttpError && (err.status === 401 || err.status === 403)) {
+                        setUser(null);
+                        setAuthError(err.status === 403 ? err.message : null);
+                    } else {
+                        setUser(null);
+                    }
                 }
             } catch (err) {
                 if (controller.signal.aborted) {
@@ -62,9 +74,8 @@ function App() {
                 }
                 console.error('Failed to fetch auth config:', err);
                 // On error, default to no auth (allow access)
-                const guestUser = { name: 'Guest', email: 'guest@local' };
+                const guestUser: User = { name: 'Guest', email: 'guest@local', role: 'viewer' };
                 setUser(guestUser);
-                localStorage.setItem('auth_user', JSON.stringify(guestUser));
             } finally {
                 if (!controller.signal.aborted) {
                     setLoading(false);
@@ -76,18 +87,28 @@ function App() {
         return () => controller.abort();
     }, []);
 
-    // Persist user to localStorage when it changes
     useEffect(() => {
-        if (user) {
-            localStorage.setItem('auth_user', JSON.stringify(user));
-        } else {
-            localStorage.removeItem('auth_user');
-        }
-    }, [user]);
+        const handleAuthError = (event: Event) => {
+            const customEvent = event as CustomEvent<{ status?: number; url?: string }>;
+            const status = customEvent.detail?.status;
+            const url = customEvent.detail?.url ?? "";
+            if (status === 401) {
+                setUser(null);
+                return;
+            }
+            if (status === 403 && url.includes('/api/auth/me')) {
+                setUser(null);
+            }
+        };
+        window.addEventListener('kicad-prism-auth-error', handleAuthError);
+        return () => window.removeEventListener('kicad-prism-auth-error', handleAuthError);
+    }, []);
 
     const handleLogout = () => {
-        setUser(null);
-        localStorage.removeItem('auth_user');
+        void fetchApi('/api/auth/logout', { method: 'POST' }).finally(() => {
+            setUser(null);
+            setAuthError(null);
+        });
     };
 
     // Show loading state while fetching auth config
@@ -116,6 +137,7 @@ function App() {
                     onLoginSuccess={setUser}
                     devMode={authConfig.dev_mode}
                     workspaceName={authConfig.workspace_name}
+                    initialError={authError}
                 />
             </GoogleOAuthProvider>
         );
@@ -150,7 +172,9 @@ function App() {
                                 <div className="flex items-center gap-4">
                                     {user && user.email !== 'guest@local' && (
                                         <>
-                                            <span className="text-sm text-muted-foreground">Welcome, {user.name}</span>
+                                            <span className="text-sm text-muted-foreground">
+                                                Welcome, {user.name} ({user.role})
+                                            </span>
                                             <Button variant="ghost" size="sm" onClick={handleLogout}>Logout</Button>
                                         </>
                                     )}
@@ -164,6 +188,7 @@ function App() {
                         <main className="h-[calc(100vh-4rem)]">
                             <Workspace
                                 searchQuery={workspaceSearchQuery}
+                                user={user}
                             />
                         </main>
                     </div>

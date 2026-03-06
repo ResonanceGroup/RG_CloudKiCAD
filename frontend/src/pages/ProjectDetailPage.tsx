@@ -2,7 +2,7 @@ import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Suspense, lazy, useEffect, useState, type ComponentType } from "react";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, FileText, History, Box, FolderOpen, ChevronLeft, ChevronRight, GitBranch, RotateCcw, PlayCircle, RefreshCw, Menu, Settings } from "lucide-react";
-import { fetchJson, readApiError } from "@/lib/api";
+import { fetchApi, fetchJson, readApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -83,6 +83,7 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
     const [visualizerLoaded, setVisualizerLoaded] = useState(false);
     const [refreshKey, setRefreshKey] = useState(0);
     const [pathConfigOpen, setPathConfigOpen] = useState(false);
+    const canMutateProject = user?.role === "admin" || user?.role === "designer";
 
     // Helper function to get display name
     const getDisplayName = (project: Project) => {
@@ -106,7 +107,7 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
     };
 
     const handleSync = async () => {
-        if (!projectId || syncing) return;
+        if (!projectId || syncing || !canMutateProject) return;
 
         setSyncing(true);
         setSyncMessage(null);
@@ -296,27 +297,30 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
                 </div>
 
                 {/* Sync Button */}
-                <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleSync}
-                    disabled={syncing}
-                    className="flex items-center gap-2"
-                    title="Sync with remote repository"
-                >
-                    <RefreshCw className={cn("h-4 w-4", syncing && "animate-spin")} />
-                    {syncing ? 'Syncing...' : 'Sync'}
-                </Button>
+                {canMutateProject && (
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleSync}
+                        disabled={syncing}
+                        className="flex items-center gap-2"
+                        title="Sync with remote repository"
+                    >
+                        <RefreshCw className={cn("h-4 w-4", syncing && "animate-spin")} />
+                        {syncing ? 'Syncing...' : 'Sync'}
+                    </Button>
+                )}
 
-                {/* Path Config Button */}
-                <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={() => setPathConfigOpen(true)}
-                    title="Project settings"
-                >
-                    <Settings className="h-4 w-4" />
-                </Button>
+                {canMutateProject && (
+                    <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={() => setPathConfigOpen(true)}
+                        title="Project settings"
+                    >
+                        <Settings className="h-4 w-4" />
+                    </Button>
+                )}
 
                 {projectId && pathConfigOpen && (
                     <Suspense fallback={null}>
@@ -489,7 +493,12 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
                             <h2 className="text-2xl font-bold mb-6">History</h2>
                             {projectId && (
                                 <Suspense fallback={<div className="text-sm text-muted-foreground">Loading history...</div>}>
-                                    <HistoryViewer key={refreshKey} projectId={projectId} onViewCommit={handleViewCommit} />
+                                    <HistoryViewer
+                                        key={refreshKey}
+                                        projectId={projectId}
+                                        onViewCommit={handleViewCommit}
+                                        canCompareDiffs={canMutateProject}
+                                    />
                                 </Suspense>
                             )}
                         </div>
@@ -515,7 +524,7 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
 
                     {activeSection === "workflows" && (
                         <div>
-                            <WorkflowsPanel projectId={projectId!} user={user} />
+                            <WorkflowsPanel projectId={projectId!} user={user} canRun={canMutateProject} />
                         </div>
                     )}
 
@@ -527,7 +536,7 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
 }
 
 // Workflows Sub-component
-function WorkflowsPanel({ projectId, user }: { projectId: string, user: User | null }) {
+function WorkflowsPanel({ projectId, user, canRun }: { projectId: string, user: User | null, canRun: boolean }) {
     const [runningJob, setRunningJob] = useState<{ id: string, type: string } | null>(null);
     const [logs, setLogs] = useState<string[]>([]);
     const [status, setStatus] = useState<string>("idle");
@@ -566,10 +575,14 @@ function WorkflowsPanel({ projectId, user }: { projectId: string, user: User | n
     }, [runningJob]);
 
     const runWorkflow = async (type: string) => {
+        if (!canRun) {
+            alert("You do not have permission to run workflows.");
+            return;
+        }
         setLogs([]);
         setStatus("running");
         try {
-            const res = await fetch(`/api/projects/${projectId}/workflows`, {
+            const res = await fetchApi(`/api/projects/${projectId}/workflows`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -602,21 +615,21 @@ function WorkflowsPanel({ projectId, user }: { projectId: string, user: User | n
                     desc="Generate Schematics, Netlists, and BOMs."
                     icon={FileText}
                     onClick={() => runWorkflow("design")}
-                    disabled={status === "running"}
+                    disabled={status === "running" || !canRun}
                 />
                 <WorkflowCard
                     title="Manufacturing Outputs"
                     desc="Generate Gerbers, Drill Files, and Pick & Place."
                     icon={Box}
                     onClick={() => runWorkflow("manufacturing")}
-                    disabled={status === "running"}
+                    disabled={status === "running" || !canRun}
                 />
                 <WorkflowCard
                     title="3D Renders"
                     desc="Generate Ray-Traced Renders of the PCB."
                     icon={Box}
                     onClick={() => runWorkflow("render")}
-                    disabled={status === "running"}
+                    disabled={status === "running" || !canRun}
                 />
             </div>
 

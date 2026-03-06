@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { fetchJson, readApiError } from "@/lib/api";
+import { fetchApi, fetchJson, readApiError } from "@/lib/api";
 import { FolderTreeItem, Project } from "@/types/project";
 
 export interface WorkspaceActionResult {
@@ -87,7 +87,7 @@ export function useWorkspaceData(): WorkspaceDataState {
       fallbackError: string
     ): Promise<WorkspaceActionResult> => {
       try {
-        const response = await fetch(input, init);
+        const response = await fetchApi(input, init);
         if (!response.ok) {
           return { ok: false, error: await readApiError(response, fallbackError) };
         }

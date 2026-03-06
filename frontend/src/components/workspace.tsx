@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { toast } from "sonner";
 
+import { User } from "@/types/auth";
 import { FolderTreeItem, Project } from "@/types/project";
 import { ImportDialog } from "./import-dialog";
 import { SettingsDialog } from "./settings-dialog";
@@ -26,9 +27,10 @@ import { WorkspaceSection, ViewMode } from "./workspace/workspace-types";
 
 interface WorkspaceProps {
   searchQuery: string;
+  user: User | null;
 }
 
-export function Workspace({ searchQuery }: WorkspaceProps) {
+export function Workspace({ searchQuery, user }: WorkspaceProps) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -56,6 +58,8 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
 
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [isDeletingProject, setIsDeletingProject] = useState(false);
+  const canManageProjects = user?.role === "admin" || user?.role === "designer";
+  const canOpenSettings = user?.role === "admin";
 
   const getProjectDisplayName = (project: Project) => project.display_name || project.name;
   const folderFromUrl = searchParams.get("folder");
@@ -125,6 +129,11 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
   };
 
   const handleCreateFolder = async (name: string) => {
+    if (!canManageProjects) {
+      toast.error("You do not have permission to create folders");
+      return;
+    }
+
     setIsCreatingFolder(true);
     try {
       const result = await createFolder(name, currentFolderId);
@@ -141,6 +150,11 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
   };
 
   const handleRenameFolder = async (folderId: string, name: string) => {
+    if (!canManageProjects) {
+      toast.error("You do not have permission to rename folders");
+      return;
+    }
+
     setIsRenamingFolder(true);
     try {
       const result = await renameFolder(folderId, name);
@@ -157,6 +171,11 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
   };
 
   const handleDeleteFolder = async (folderId: string) => {
+    if (!canManageProjects) {
+      toast.error("You do not have permission to delete folders");
+      return;
+    }
+
     setIsDeletingFolder(true);
     try {
       const deletedFolderName = folderToDelete?.name || "folder";
@@ -174,6 +193,11 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
   };
 
   const handleMoveProject = async (projectId: string, folderId: string | null) => {
+    if (!canManageProjects) {
+      toast.error("You do not have permission to move projects");
+      return;
+    }
+
     setIsMovingProject(true);
     try {
       const movedProjectName = projectToMove ? getProjectDisplayName(projectToMove) : "project";
@@ -191,6 +215,11 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
   };
 
   const handleDeleteProject = async (projectId: string) => {
+    if (!canManageProjects) {
+      toast.error("You do not have permission to delete projects");
+      return;
+    }
+
     setIsDeletingProject(true);
     try {
       const deletedProjectName = projectToDelete ? getProjectDisplayName(projectToDelete) : "project";
@@ -238,10 +267,12 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
               <WorkspaceProjectToolbar
                 viewMode={viewMode}
                 onViewModeChange={setViewMode}
-                onImport={() => setIsImportOpen(true)}
-                onCreateFolder={() => setIsCreateFolderOpen(true)}
+                onImport={() => canManageProjects && setIsImportOpen(true)}
+                onCreateFolder={() => canManageProjects && setIsCreateFolderOpen(true)}
                 onRefresh={() => void refresh()}
-                onOpenSettings={() => setIsSettingsOpen(true)}
+                onOpenSettings={() => canOpenSettings && setIsSettingsOpen(true)}
+                canManageProjects={canManageProjects}
+                canOpenSettings={canOpenSettings}
               />
             )}
           </header>
@@ -276,6 +307,7 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
                     onDeleteFolder={setFolderToDelete}
                     onMoveProject={setProjectToMove}
                     onDeleteProject={setProjectToDelete}
+                    canManageProjects={canManageProjects}
                   />
                 ) : (
                   <WorkspaceListView
@@ -291,6 +323,7 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
                     onDeleteFolder={setFolderToDelete}
                     onMoveProject={setProjectToMove}
                     onDeleteProject={setProjectToDelete}
+                    canManageProjects={canManageProjects}
                   />
                 )}
               </div>
@@ -300,7 +333,7 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
       </div>
 
       <ImportDialog open={isImportOpen} onOpenChange={setIsImportOpen} onImportComplete={refresh} />
-      <SettingsDialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen} />
+      <SettingsDialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen} user={user} />
 
       <CreateFolderDialog
         open={isCreateFolderOpen}

@@ -21,6 +21,7 @@ interface WorkspaceGalleryViewProps {
   onDeleteFolder: (folder: FolderTreeItem) => void;
   onMoveProject: (project: Project) => void;
   onDeleteProject: (project: Project) => void;
+  canManageProjects: boolean;
 }
 
 export function WorkspaceGalleryView({
@@ -37,6 +38,7 @@ export function WorkspaceGalleryView({
   onDeleteFolder,
   onMoveProject,
   onDeleteProject,
+  canManageProjects,
 }: WorkspaceGalleryViewProps) {
   return (
     <div className="space-y-6">
@@ -61,6 +63,7 @@ export function WorkspaceGalleryView({
                       projectName={getProjectDisplayName(project)}
                       onMove={onMoveProject}
                       onDelete={onDeleteProject}
+                      canManage={canManageProjects}
                     />
                   }
                 />
@@ -102,7 +105,12 @@ export function WorkspaceGalleryView({
                           </span>
                         </div>
                       </div>
-                      <FolderActionMenu folder={folder} onRename={onRenameFolder} onDelete={onDeleteFolder} />
+                      <FolderActionMenu
+                        folder={folder}
+                        onRename={onRenameFolder}
+                        onDelete={onDeleteFolder}
+                        canManage={canManageProjects}
+                      />
                     </div>
                   </div>
                 ))}
@@ -128,6 +136,7 @@ export function WorkspaceGalleryView({
                         projectName={getProjectDisplayName(project)}
                         onMove={onMoveProject}
                         onDelete={onDeleteProject}
+                        canManage={canManageProjects}
                       />
                     }
                   />

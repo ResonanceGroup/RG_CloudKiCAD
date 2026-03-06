@@ -1,11 +1,13 @@
 import os
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from git import Repo
 from typing import List, Dict, Any
 from pydantic import BaseModel
 import datetime
 
-router = APIRouter()
+from app.core.security import require_viewer
+
+router = APIRouter(dependencies=[Depends(require_viewer)])
 
 # Configuration
 # Default to sibling directory for development

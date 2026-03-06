@@ -130,8 +130,8 @@ cd KiCAD-Prism
 # Start the application (no authentication)
 AUTH_ENABLED=false docker compose up -d --build
 
-# OR: Start with Google OAuth
-GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com docker compose up -d
+# OR: Start with Google OAuth + RBAC session auth
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com SESSION_SECRET=change-me docker compose up -d
 
 # Access the UI at http://localhost
 ```
@@ -167,6 +167,8 @@ To stop: `docker compose down`
 # Create a .env file for convenience
 echo "GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com" > .env
 echo "AUTH_ENABLED=true" >> .env
+echo "SESSION_SECRET=change-me-to-a-long-random-secret" >> .env
+echo "BOOTSTRAP_ADMIN_USERS_STR=admin@yourcompany.com" >> .env
 
 # Docker Compose automatically reads .env
 docker compose up -d
@@ -191,13 +193,18 @@ npm run dev
 
 ## Authentication & Access Control
 
-KiCAD Prism supports Google Sign-in with domain-level restrictions for enterprise security.
+KiCAD Prism supports Google Sign-in with role-based access control (RBAC) and optional allowlists.
 
 | Mode | Behavior |
 |------|----------|
 | **Public Gallery** | No login required, projects are read-only. |
 | **Development** | Login shown with Dev Bypass button for local testing. |
 | **Production** | Full Google OAuth required with domain verification. |
+
+RBAC roles:
+- `viewer`: read-only project access
+- `designer`: project/folder/workflow/comment mutations
+- `admin`: full access + user role management and SSH settings
 
 See [DEPLOYMENT.md](./DEPLOYMENT.md#authentication-setup) for configuration details.
 

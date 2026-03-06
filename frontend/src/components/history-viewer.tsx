@@ -32,6 +32,7 @@ interface CommitsResponse {
 interface HistoryViewerProps {
     projectId: string;
     onViewCommit: (commitHash: string) => void;
+    canCompareDiffs: boolean;
 }
 
 function formatDate(isoDate: string): string {
@@ -53,9 +54,10 @@ interface CommitItemProps {
     onViewCommit: (hash: string) => void;
     isSelected: boolean;
     onSelect: () => void;
+    selectable: boolean;
 }
 
-function CommitItem({ commit, onViewCommit, isSelected, onSelect }: CommitItemProps) {
+function CommitItem({ commit, onViewCommit, isSelected, onSelect, selectable }: CommitItemProps) {
     const [copied, setCopied] = useState(false);
 
     const handleCopy = async () => {
@@ -72,12 +74,16 @@ function CommitItem({ commit, onViewCommit, isSelected, onSelect }: CommitItemPr
         <div className={`border rounded-lg p-4 transition-colors ${isSelected ? 'bg-primary/5 border-primary/50' : 'hover:bg-muted/50'}`}>
             <div className="flex items-start gap-3">
                 <div className="flex-shrink-0 mt-1 flex items-center justify-center">
-                    <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={onSelect}
-                        className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer accent-primary"
-                    />
+                    {selectable ? (
+                        <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={onSelect}
+                            className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer accent-primary"
+                        />
+                    ) : (
+                        <GitCommit className="h-4 w-4 text-muted-foreground" />
+                    )}
                 </div>
                 <div className="flex-1 min-w-0">
                     <div className="flex items-start justify-between gap-4 mb-2">
@@ -128,7 +134,7 @@ function CommitItem({ commit, onViewCommit, isSelected, onSelect }: CommitItemPr
     );
 }
 
-export function HistoryViewer({ projectId, onViewCommit }: HistoryViewerProps) {
+export function HistoryViewer({ projectId, onViewCommit, canCompareDiffs }: HistoryViewerProps) {
     const [releases, setReleases] = useState<Release[]>([]);
     const [commits, setCommits] = useState<Commit[]>([]);
     const [loading, setLoading] = useState(true);
@@ -157,6 +163,9 @@ export function HistoryViewer({ projectId, onViewCommit }: HistoryViewerProps) {
     }, [commits, selectedCommits]);
 
     const handleSelectCommit = (hash: string) => {
+        if (!canCompareDiffs) {
+            return;
+        }
         setSelectedCommits(prev => {
             if (prev.includes(hash)) {
                 return prev.filter(h => h !== hash);
@@ -169,6 +178,12 @@ export function HistoryViewer({ projectId, onViewCommit }: HistoryViewerProps) {
             return [...prev, hash];
         });
     };
+
+    useEffect(() => {
+        if (!canCompareDiffs) {
+            setSelectedCommits([]);
+        }
+    }, [canCompareDiffs]);
 
     useEffect(() => {
         const currentHashes = new Set(commits.map((commit) => commit.full_hash));
@@ -317,7 +332,7 @@ export function HistoryViewer({ projectId, onViewCommit }: HistoryViewerProps) {
                         <GitCommit className="h-5 w-5" />
                         Commits
                     </h3>
-                    {selectedCommits.length === 2 && (
+                    {canCompareDiffs && selectedCommits.length === 2 && (
                         <div className="flex items-center gap-2">
                             <Button
                                 variant="default"
@@ -346,6 +361,7 @@ export function HistoryViewer({ projectId, onViewCommit }: HistoryViewerProps) {
                                 onViewCommit={onViewCommit}
                                 isSelected={selectedCommits.includes(commit.full_hash)}
                                 onSelect={() => handleSelectCommit(commit.full_hash)}
+                                selectable={canCompareDiffs}
                             />
                         ))}
                     </div>

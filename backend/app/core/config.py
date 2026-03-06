@@ -45,6 +45,44 @@ class Settings(BaseSettings):
         default="",
         description="Comma-separated list of allowed user emails"
     )
+
+    # Comma-separated list of allowed email domains (legacy compatibility).
+    ALLOWED_DOMAINS_STR: str = Field(
+        default="",
+        description="Comma-separated list of allowed email domains"
+    )
+
+    # Comma-separated list of bootstrap admin user emails.
+    BOOTSTRAP_ADMIN_USERS_STR: str = Field(
+        default="",
+        description="Comma-separated list of admin user emails provisioned from env"
+    )
+
+    # Path to persistent role assignment JSON file.
+    ROLE_STORE_PATH: str = Field(
+        default="",
+        description="Path to persistent RBAC role store JSON"
+    )
+
+    # Session signing secret for HttpOnly cookie authentication.
+    SESSION_SECRET: str = Field(
+        default="",
+        description="HMAC secret used to sign session cookies"
+    )
+
+    # Session TTL in hours.
+    SESSION_TTL_HOURS: int = Field(
+        default=12,
+        ge=1,
+        le=168,
+        description="Session expiration (hours)"
+    )
+
+    # Cookie secure flag (set true behind HTTPS).
+    SESSION_COOKIE_SECURE: bool = Field(
+        default=False,
+        description="Whether session cookie should be marked Secure"
+    )
     
     # ===========================================
     # Development Settings
@@ -78,6 +116,29 @@ class Settings(BaseSettings):
     def ALLOWED_USERS(self) -> List[str]:
         """Parse allowed emails from comma-separated string."""
         return [u.strip().lower() for u in self.ALLOWED_USERS_STR.split(",") if u.strip()]
+
+    @property
+    def ALLOWED_DOMAINS(self) -> List[str]:
+        """Parse allowed domains from comma-separated string."""
+        return [d.strip().lower() for d in self.ALLOWED_DOMAINS_STR.split(",") if d.strip()]
+
+    @property
+    def BOOTSTRAP_ADMIN_USERS(self) -> List[str]:
+        """Parse bootstrap admin emails from comma-separated string."""
+        return [u.strip().lower() for u in self.BOOTSTRAP_ADMIN_USERS_STR.split(",") if u.strip()]
+
+    @property
+    def KICAD_PROJECTS_ROOT(self) -> str:
+        return os.environ.get(
+            "KICAD_PROJECTS_ROOT",
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../data/projects")),
+        )
+
+    @property
+    def RESOLVED_ROLE_STORE_PATH(self) -> str:
+        if self.ROLE_STORE_PATH.strip():
+            return os.path.abspath(os.path.expanduser(self.ROLE_STORE_PATH.strip()))
+        return os.path.join(self.KICAD_PROJECTS_ROOT, ".rbac_roles.json")
     
     @property
     def AUTH_ENABLED(self) -> bool:

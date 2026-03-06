@@ -6,11 +6,13 @@ import prismLogoHorizontal from "@/assets/branding/kicad-prism/kicad-prism-logo-
 import prismLogoMark from "@/assets/branding/kicad-prism/kicad-prism-icon.svg";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { User } from "@/types/auth";
 
 interface LoginPageProps {
-  onLoginSuccess: (user: any) => void;
+  onLoginSuccess: (user: User) => void;
   devMode?: boolean;
   workspaceName?: string;
+  initialError?: string | null;
 }
 
 const RELEASE_CACHE_KEY = "kicad_prism_latest_release_tag";
@@ -18,10 +20,19 @@ const RELEASE_CACHE_TIME_KEY = "kicad_prism_latest_release_tag_fetched_at";
 const RELEASE_CACHE_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_GITHUB_REPO = "krishna-swaroop/KiCAD-Prism";
 
-export function LoginPage({ onLoginSuccess, devMode = false, workspaceName = "KiCAD Prism" }: LoginPageProps) {
-  const [error, setError] = useState<string | null>(null);
+export function LoginPage({
+  onLoginSuccess,
+  devMode = false,
+  workspaceName = "KiCAD Prism",
+  initialError = null,
+}: LoginPageProps) {
+  const [error, setError] = useState<string | null>(initialError);
   const [isLoading, setIsLoading] = useState(false);
   const [releaseTag, setReleaseTag] = useState("...");
+
+  useEffect(() => {
+    setError(initialError);
+  }, [initialError]);
 
   useEffect(() => {
     const cachedTag = window.sessionStorage.getItem(RELEASE_CACHE_KEY);
@@ -82,6 +93,7 @@ export function LoginPage({ onLoginSuccess, devMode = false, workspaceName = "Ki
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ token: credentialResponse.credential }),
       });
 
@@ -101,7 +113,7 @@ export function LoginPage({ onLoginSuccess, devMode = false, workspaceName = "Ki
 
   const handleDevBypass = () => {
     window.history.replaceState(null, "", "/");
-    onLoginSuccess({ name: "Dev User", email: "dev@pixxel.co.in" });
+    onLoginSuccess({ name: "Dev User", email: "dev@pixxel.co.in", role: "admin" });
   };
 
   return (

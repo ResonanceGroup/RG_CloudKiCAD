@@ -15,6 +15,7 @@ interface FolderActionMenuProps {
   folder: FolderTreeItem;
   onRename: (folder: FolderTreeItem) => void;
   onDelete: (folder: FolderTreeItem) => void;
+  canManage: boolean;
 }
 
 interface ProjectActionMenuProps {
@@ -22,9 +23,14 @@ interface ProjectActionMenuProps {
   projectName: string;
   onMove: (project: Project) => void;
   onDelete: (project: Project) => void;
+  canManage: boolean;
 }
 
-export function FolderActionMenu({ folder, onRename, onDelete }: FolderActionMenuProps) {
+export function FolderActionMenu({ folder, onRename, onDelete, canManage }: FolderActionMenuProps) {
+  if (!canManage) {
+    return null;
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -66,7 +72,11 @@ export function FolderActionMenu({ folder, onRename, onDelete }: FolderActionMen
   );
 }
 
-export function ProjectActionMenu({ project, projectName, onMove, onDelete }: ProjectActionMenuProps) {
+export function ProjectActionMenu({ project, projectName, onMove, onDelete, canManage }: ProjectActionMenuProps) {
+  if (!canManage) {
+    return null;
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
