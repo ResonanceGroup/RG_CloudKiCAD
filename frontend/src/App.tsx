@@ -1,18 +1,30 @@
-import { useState, useEffect } from 'react';
+import { Suspense, lazy, useDeferredValue, useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { User, AuthConfig } from './types/auth';
-import { LoginPage } from './components/login-page';
-import { GoogleOAuthProvider } from '@react-oauth/google';
+import type { User, AuthConfig } from './types/auth';
 import { Button } from '@/components/ui/button';
-import { Workspace } from './components/workspace';
-import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { Toaster } from 'sonner';
 import { Input } from '@/components/ui/input';
 import { Search } from 'lucide-react';
 import { ApiHttpError, fetchApi, fetchJson } from '@/lib/api';
 import prismLogoMark from './assets/branding/kicad-prism/kicad-prism-icon.svg';
 
+const LoginPage = lazy(() =>
+    import('./components/login-page').then((module) => ({ default: module.LoginPage }))
+);
+const Workspace = lazy(() =>
+    import('./components/workspace').then((module) => ({ default: module.Workspace }))
+);
+const ProjectDetailPage = lazy(() =>
+    import('./pages/ProjectDetailPage').then((module) => ({ default: module.ProjectDetailPage }))
+);
 
+function RouteFallback() {
+    return (
+        <div className="flex items-center justify-center h-full min-h-[16rem] bg-background">
+            <div className="text-muted-foreground">Loading...</div>
+        </div>
+    );
+}
 
 function App() {
     const [user, setUser] = useState<User | null>(null);
@@ -20,6 +32,7 @@ function App() {
     const [loading, setLoading] = useState(true);
     const [authError, setAuthError] = useState<string | null>(null);
     const [workspaceSearchQuery, setWorkspaceSearchQuery] = useState("");
+    const deferredWorkspaceSearchQuery = useDeferredValue(workspaceSearchQuery);
 
     // Fetch auth configuration on mount
     useEffect(() => {
@@ -132,14 +145,15 @@ function App() {
         }
 
         return (
-            <GoogleOAuthProvider clientId={authConfig.google_client_id}>
+            <Suspense fallback={<RouteFallback />}>
                 <LoginPage
                     onLoginSuccess={setUser}
+                    googleClientId={authConfig.google_client_id}
                     devMode={authConfig.dev_mode}
                     workspaceName={authConfig.workspace_name}
                     initialError={authError}
                 />
-            </GoogleOAuthProvider>
+            </Suspense>
         );
     }
 
@@ -186,14 +200,23 @@ function App() {
                         </header>
 
                         <main className="h-[calc(100vh-4rem)]">
-                            <Workspace
-                                searchQuery={workspaceSearchQuery}
-                                user={user}
-                            />
+                            <Suspense fallback={<RouteFallback />}>
+                                <Workspace
+                                    searchQuery={deferredWorkspaceSearchQuery}
+                                    user={user}
+                                />
+                            </Suspense>
                         </main>
                     </div>
                 } />
-                <Route path="/project/:projectId" element={<ProjectDetailPage user={user} />} />
+                <Route
+                    path="/project/:projectId"
+                    element={
+                        <Suspense fallback={<RouteFallback />}>
+                            <ProjectDetailPage user={user} />
+                        </Suspense>
+                    }
+                />
                 <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
         </BrowserRouter>

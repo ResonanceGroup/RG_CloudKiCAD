@@ -1,21 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { toast } from "sonner";
 
-import { User } from "@/types/auth";
-import { FolderTreeItem, Project } from "@/types/project";
-import { ImportDialog } from "./import-dialog";
-import { SettingsDialog } from "./settings-dialog";
+import type { User } from "@/types/auth";
+import type { FolderTreeItem, Project } from "@/types/project";
 import { Button } from "@/components/ui/button";
 import { useWorkspaceData } from "@/hooks/use-workspace-data";
 import { useWorkspaceSearch } from "@/hooks/use-workspace-search";
-
-import { CreateFolderDialog } from "./workspace/create-folder-dialog";
-import { DeleteFolderDialog } from "./workspace/delete-folder-dialog";
-import { DeleteProjectDialog } from "./workspace/delete-project-dialog";
-import { MoveProjectDialog } from "./workspace/move-project-dialog";
-import { RenameFolderDialog } from "./workspace/rename-folder-dialog";
 import { WorkspaceAppsPlaceholder } from "./workspace/workspace-apps-placeholder";
 import { WorkspaceBreadcrumbs } from "./workspace/workspace-breadcrumbs";
 import { WorkspaceGalleryView } from "./workspace/workspace-gallery-view";
@@ -24,6 +16,28 @@ import { WorkspaceLoadingState } from "./workspace/workspace-loading-state";
 import { WorkspaceProjectToolbar } from "./workspace/workspace-project-toolbar";
 import { WorkspaceSidebar } from "./workspace/workspace-sidebar";
 import { WorkspaceSection, ViewMode } from "./workspace/workspace-types";
+
+const ImportDialog = lazy(() =>
+  import("./import-dialog").then((module) => ({ default: module.ImportDialog }))
+);
+const SettingsDialog = lazy(() =>
+  import("./settings-dialog").then((module) => ({ default: module.SettingsDialog }))
+);
+const CreateFolderDialog = lazy(() =>
+  import("./workspace/create-folder-dialog").then((module) => ({ default: module.CreateFolderDialog }))
+);
+const DeleteFolderDialog = lazy(() =>
+  import("./workspace/delete-folder-dialog").then((module) => ({ default: module.DeleteFolderDialog }))
+);
+const DeleteProjectDialog = lazy(() =>
+  import("./workspace/delete-project-dialog").then((module) => ({ default: module.DeleteProjectDialog }))
+);
+const MoveProjectDialog = lazy(() =>
+  import("./workspace/move-project-dialog").then((module) => ({ default: module.MoveProjectDialog }))
+);
+const RenameFolderDialog = lazy(() =>
+  import("./workspace/rename-folder-dialog").then((module) => ({ default: module.RenameFolderDialog }))
+);
 
 interface WorkspaceProps {
   searchQuery: string;
@@ -332,42 +346,70 @@ export function Workspace({ searchQuery, user }: WorkspaceProps) {
         </div>
       </div>
 
-      <ImportDialog open={isImportOpen} onOpenChange={setIsImportOpen} onImportComplete={refresh} />
-      <SettingsDialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen} user={user} />
+      {isImportOpen && (
+        <Suspense fallback={null}>
+          <ImportDialog open={isImportOpen} onOpenChange={setIsImportOpen} onImportComplete={refresh} />
+        </Suspense>
+      )}
+      {isSettingsOpen && (
+        <Suspense fallback={null}>
+          <SettingsDialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen} user={user} />
+        </Suspense>
+      )}
 
-      <CreateFolderDialog
-        open={isCreateFolderOpen}
-        isSubmitting={isCreatingFolder}
-        onOpenChange={setIsCreateFolderOpen}
-        onSubmit={handleCreateFolder}
-      />
-      <RenameFolderDialog
-        folder={folderToRename}
-        isSubmitting={isRenamingFolder}
-        onClose={() => setFolderToRename(null)}
-        onSubmit={handleRenameFolder}
-      />
-      <DeleteFolderDialog
-        folder={folderToDelete}
-        isDeleting={isDeletingFolder}
-        onClose={() => setFolderToDelete(null)}
-        onConfirm={handleDeleteFolder}
-      />
-      <MoveProjectDialog
-        project={projectToMove}
-        folders={folders}
-        isMoving={isMovingProject}
-        onClose={() => setProjectToMove(null)}
-        onConfirm={handleMoveProject}
-        getProjectDisplayName={getProjectDisplayName}
-      />
-      <DeleteProjectDialog
-        project={projectToDelete}
-        isDeleting={isDeletingProject}
-        onClose={() => setProjectToDelete(null)}
-        onConfirm={handleDeleteProject}
-        getProjectDisplayName={getProjectDisplayName}
-      />
+      {isCreateFolderOpen && (
+        <Suspense fallback={null}>
+          <CreateFolderDialog
+            open={isCreateFolderOpen}
+            isSubmitting={isCreatingFolder}
+            onOpenChange={setIsCreateFolderOpen}
+            onSubmit={handleCreateFolder}
+          />
+        </Suspense>
+      )}
+      {folderToRename && (
+        <Suspense fallback={null}>
+          <RenameFolderDialog
+            folder={folderToRename}
+            isSubmitting={isRenamingFolder}
+            onClose={() => setFolderToRename(null)}
+            onSubmit={handleRenameFolder}
+          />
+        </Suspense>
+      )}
+      {folderToDelete && (
+        <Suspense fallback={null}>
+          <DeleteFolderDialog
+            folder={folderToDelete}
+            isDeleting={isDeletingFolder}
+            onClose={() => setFolderToDelete(null)}
+            onConfirm={handleDeleteFolder}
+          />
+        </Suspense>
+      )}
+      {projectToMove && (
+        <Suspense fallback={null}>
+          <MoveProjectDialog
+            project={projectToMove}
+            folders={folders}
+            isMoving={isMovingProject}
+            onClose={() => setProjectToMove(null)}
+            onConfirm={handleMoveProject}
+            getProjectDisplayName={getProjectDisplayName}
+          />
+        </Suspense>
+      )}
+      {projectToDelete && (
+        <Suspense fallback={null}>
+          <DeleteProjectDialog
+            project={projectToDelete}
+            isDeleting={isDeletingProject}
+            onClose={() => setProjectToDelete(null)}
+            onConfirm={handleDeleteProject}
+            getProjectDisplayName={getProjectDisplayName}
+          />
+        </Suspense>
+      )}
     </>
   );
 }

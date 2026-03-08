@@ -4,10 +4,6 @@ import { Button } from "@/components/ui/button";
 import { ArrowLeft, FileText, History, Box, FolderOpen, ChevronLeft, ChevronRight, GitBranch, RotateCcw, PlayCircle, RefreshCw, Menu, Settings } from "lucide-react";
 import { fetchApi, fetchJson, readApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeRaw from "rehype-raw";
-import "github-markdown-css/github-markdown-dark.css";
 import { User } from "@/types/auth";
 
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -27,6 +23,9 @@ const HistoryViewer = lazy(() =>
 const Visualizer = lazy(() =>
     import("@/components/visualizer").then((module) => ({ default: module.Visualizer }))
 );
+const MarkdownContent = lazy(() =>
+    import("@/components/markdown-content").then((module) => ({ default: module.MarkdownContent }))
+);
 
 interface Project {
     id: string;
@@ -38,20 +37,13 @@ interface Project {
     last_modified: string;
 }
 
-interface ProjectNameResponse {
-    display_name?: string;
+interface CommitDistanceResponse {
+    commits_behind: number;
 }
 
-interface ReadmeResponse {
-    content: string;
-}
-
-interface CommitSummary {
-    full_hash: string;
-}
-
-interface CommitsResponse {
-    commits: CommitSummary[];
+interface ProjectOverviewResponse {
+    project: Project;
+    readme: string | null;
 }
 
 interface WorkflowJobResponse {
@@ -140,29 +132,21 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
 
         const fetchProjectData = async () => {
             try {
-                const readmeUrl = currentCommit
-                    ? `/api/projects/${projectId}/readme?commit=${currentCommit}`
-                    : `/api/projects/${projectId}/readme`;
-
-                const [projectData, nameData, readmeData] = await Promise.all([
-                    fetchJson<Project>(`/api/projects/${projectId}`, { signal: controller.signal }, "Failed to fetch project"),
-                    fetchJson<ProjectNameResponse>(
-                        `/api/projects/${projectId}/name`,
-                        { signal: controller.signal },
-                        "Failed to fetch project name"
-                    ).catch(() => null),
-                    fetchJson<ReadmeResponse>(readmeUrl, { signal: controller.signal }, "README not found").catch(() => null),
-                ]);
+                const overviewUrl = currentCommit
+                    ? `/api/projects/${projectId}/overview?commit=${encodeURIComponent(currentCommit)}`
+                    : `/api/projects/${projectId}/overview`;
+                const overview = await fetchJson<ProjectOverviewResponse>(
+                    overviewUrl,
+                    { signal: controller.signal },
+                    "Failed to fetch project overview"
+                );
 
                 if (controller.signal.aborted) {
                     return;
                 }
 
-                setProject({
-                    ...projectData,
-                    display_name: nameData?.display_name ?? projectData.display_name,
-                });
-                setReadme(readmeData?.content ?? "");
+                setProject(overview.project);
+                setReadme(overview.readme ?? "");
             } catch (err) {
                 if (controller.signal.aborted) {
                     return;
@@ -197,18 +181,17 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
             }
 
             try {
-                const data = await fetchJson<CommitsResponse>(
-                    `/api/projects/${projectId}/commits`,
+                const data = await fetchJson<CommitDistanceResponse>(
+                    `/api/projects/${projectId}/commits/distance?commit=${encodeURIComponent(currentCommit)}`,
                     { signal: controller.signal },
-                    "Failed to fetch commit history"
+                    "Failed to fetch commit distance"
                 );
 
                 if (controller.signal.aborted) {
                     return;
                 }
 
-                const index = data.commits.findIndex((commit) => commit.full_hash === currentCommit);
-                setCommitsBehind(index >= 0 ? index : 0);
+                setCommitsBehind(data.commits_behind ?? 0);
             } catch (err) {
                 if (controller.signal.aborted) {
                     return;
@@ -436,28 +419,14 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
                             </div>
 
                             {readme && (
-                                <div className="markdown-body" style={{ background: 'transparent' }}>
-                                    <ReactMarkdown
-                                        remarkPlugins={[remarkGfm]}
-                                        rehypePlugins={[rehypeRaw]}
-                                        components={{
-                                            img: ({ src, alt }) => {
-                                                // Convert relative image paths to use backend API
-                                                const imgSrc = src?.startsWith('http')
-                                                    ? src
-                                                    : `/api/projects/${projectId}/asset/${src}`;
-                                                return (
-                                                    <img
-                                                        src={imgSrc}
-                                                        alt={alt || ''}
-                                                    />
-                                                );
-                                            }
-                                        }}
-                                    >
-                                        {readme}
-                                    </ReactMarkdown>
-                                </div>
+                                <Suspense fallback={<div className="text-sm text-muted-foreground">Loading README...</div>}>
+                                    <MarkdownContent
+                                        content={readme}
+                                        resolveImageSrc={(src) =>
+                                            src?.startsWith('http') ? src : `/api/projects/${projectId}/asset/${src}`
+                                        }
+                                    />
+                                </Suspense>
                             )}
 
                             {!readme && (

@@ -11,6 +11,7 @@ import datetime
 import json
 import os
 import shutil
+import time
 import uuid
 from typing import Dict, List, Optional
 
@@ -44,6 +45,11 @@ class FolderTreeItem(BaseModel):
 
 FOLDERS_FILE = os.path.join(project_service.PROJECTS_ROOT, ".folders.json")
 os.makedirs(os.path.dirname(FOLDERS_FILE), exist_ok=True)
+
+FOLDERS_CACHE_TTL = 5.0
+_folders_cache: Dict[str, Folder] = {}
+_folders_cache_time: float = 0
+_folders_cache_mtime: Optional[float] = None
 
 
 def _legacy_folders_files() -> List[str]:
@@ -133,7 +139,21 @@ def _is_folder_visible_to_role(folder: Folder, user_role: Optional[Role]) -> boo
 
 
 def _load_folders() -> Dict[str, Folder]:
+    global _folders_cache, _folders_cache_time, _folders_cache_mtime
     _ensure_canonical_folders_file()
+
+    current_time = time.time()
+    try:
+        current_mtime = os.path.getmtime(FOLDERS_FILE)
+    except OSError:
+        current_mtime = None
+
+    if (
+        _folders_cache
+        and (current_time - _folders_cache_time) < FOLDERS_CACHE_TTL
+        and _folders_cache_mtime == current_mtime
+    ):
+        return _folders_cache
 
     for path in _existing_folders_file_candidates():
         try:
@@ -151,16 +171,33 @@ def _load_folders() -> Dict[str, Folder]:
             if path != FOLDERS_FILE and not os.path.exists(FOLDERS_FILE):
                 _save_folders(folders)
 
+            _folders_cache = folders
+            _folders_cache_time = current_time
+            try:
+                _folders_cache_mtime = os.path.getmtime(FOLDERS_FILE)
+            except OSError:
+                _folders_cache_mtime = current_mtime
             return folders
         except (json.JSONDecodeError, IOError):
             continue
 
+    _folders_cache = {}
+    _folders_cache_time = current_time
+    _folders_cache_mtime = current_mtime
     return {}
+
+
+def invalidate_folder_cache() -> None:
+    global _folders_cache, _folders_cache_time, _folders_cache_mtime
+    _folders_cache = {}
+    _folders_cache_time = 0
+    _folders_cache_mtime = None
 
 
 def _save_folders(folders: Dict[str, Folder]) -> None:
     with open(FOLDERS_FILE, "w", encoding="utf-8") as f:
         json.dump({k: v.dict() for k, v in folders.items()}, f, indent=2)
+    invalidate_folder_cache()
 
 
 def _children_map(folders: Dict[str, Folder]) -> Dict[Optional[str], List[str]]:
@@ -188,7 +225,7 @@ def _descendant_ids(root_folder_id: str, children: Dict[Optional[str], List[str]
 
 def _project_ids_by_folder(folders: Dict[str, Folder]) -> Dict[str, List[str]]:
     by_folder: Dict[str, List[str]] = {folder_id: [] for folder_id in folders.keys()}
-    for project in project_service.get_registered_projects():
+    for project in project_service.get_registered_project_records():
         if project.folder_id and project.folder_id in by_folder:
             by_folder[project.folder_id].append(project.id)
     return by_folder
@@ -208,7 +245,20 @@ def filter_projects_for_role(
     projects: List[project_service.Project],
     user_role: Optional[Role],
 ) -> List[project_service.Project]:
-    return [project for project in projects if is_folder_visible_to_role(project.folder_id, user_role)]
+    if user_role is None:
+        return projects
+
+    folders = _load_folders()
+
+    def project_visible(project: project_service.Project) -> bool:
+        if project.folder_id is None:
+            return True
+        folder = folders.get(project.folder_id)
+        if not folder:
+            return False
+        return _is_folder_visible_to_role(folder, user_role)
+
+    return [project for project in projects if project_visible(project)]
 
 
 def get_folder_tree(user_role: Optional[Role] = None) -> List[FolderTreeItem]:
@@ -351,7 +401,7 @@ def delete_folder(folder_id: str, cascade: bool = True) -> bool:
         raise ValueError("Folder has subfolders. Use cascade delete or move subfolders first.")
 
     # Move all projects under deleted folders back to root.
-    for project in project_service.get_registered_projects():
+    for project in project_service.get_registered_project_records():
         if project.folder_id in delete_ids:
             project_service.update_project_folder_id(project.id, None)
 
@@ -388,7 +438,14 @@ def get_folder_contents(folder_id: Optional[str], user_role: Optional[Role] = No
         [
             project
             for project in project_service.get_registered_projects()
-            if project.folder_id == folder_id and is_folder_visible_to_role(project.folder_id, user_role)
+            if project.folder_id == folder_id
+            and (
+                folder_id is None
+                or (
+                    (folder := folders.get(project.folder_id)) is not None
+                    and _is_folder_visible_to_role(folder, user_role)
+                )
+            )
         ],
         key=lambda project: (project.display_name or project.name).lower(),
     )

@@ -22,6 +22,31 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          if (id.includes("node_modules/react/") || id.includes("node_modules/react-dom/") || id.includes("node_modules/react-router")) {
+            return "framework"
+          }
+          if (
+            id.includes("node_modules/react-markdown") ||
+            id.includes("node_modules/remark-gfm") ||
+            id.includes("node_modules/rehype-raw") ||
+            id.includes("node_modules/github-markdown-css")
+          ) {
+            return "markdown-runtime"
+          }
+          if (id.includes("node_modules/@react-oauth/google")) {
+            return "auth-runtime"
+          }
+          if (
+            id.includes("node_modules/@radix-ui/") ||
+            id.includes("node_modules/radix-ui/") ||
+            id.includes("node_modules/@base-ui/") ||
+            id.includes("node_modules/sonner")
+          ) {
+            return "ui-runtime"
+          }
+          if (id.includes("node_modules/lucide-react")) {
+            return "icons-runtime"
+          }
           if (id.includes("node_modules/online-3d-viewer")) {
             return "viewer3d-runtime"
           }

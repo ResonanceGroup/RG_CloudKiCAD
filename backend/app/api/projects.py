@@ -12,6 +12,7 @@ from app.core.security import AuthenticatedUser, require_designer, require_viewe
 from app.services import file_service, folder_service, path_config_service, project_import_service, project_service
 from app.services.comments_url_service import build_comments_source_urls, resolve_comments_base_url
 from app.services.git_service import (
+    get_commit_distance,
     get_commits_list,
     get_commits_list_filtered,
     get_file_from_commit,
@@ -94,6 +95,38 @@ def _filter_projects_for_user(
     user: AuthenticatedUser,
 ) -> List[project_service.Project]:
     return folder_service.filter_projects_for_role(projects, user.role)
+
+
+def _load_project_readme_content(
+    project: project_service.Project,
+    commit: Optional[str] = None,
+) -> Optional[str]:
+    config = path_config_service.get_path_config(project.path)
+    readme_filename = config.readme or "README.md"
+
+    if commit:
+        try:
+            return _read_file_from_commit(project, commit, readme_filename)
+        except HTTPException as error:
+            if error.status_code == 404:
+                return None
+            raise
+
+    resolved = path_config_service.resolve_paths(project.path, config)
+    readme_path = resolved.readme_path
+    if not readme_path:
+        return None
+
+    try:
+        return _read_utf8_file(
+            readme_path,
+            not_found_detail="README not found",
+            read_error_prefix="Error reading README",
+        )
+    except HTTPException as error:
+        if error.status_code == 404:
+            return None
+        raise
 
 @router.get("/", response_model=List[project_service.Project])
 async def list_projects(user: AuthenticatedUser = Depends(require_viewer)):
@@ -318,6 +351,8 @@ async def sync_project_endpoint(project_id: str, user: AuthenticatedUser = Depen
     
     if result["status"] == "error":
         raise HTTPException(status_code=400, detail=result["message"])
+
+    file_service.invalidate_file_listing_cache()
     
     return result
 
@@ -359,6 +394,22 @@ async def get_project_thumbnail(project_id: str, user: AuthenticatedUser = Depen
 async def get_project_detail(project_id: str, user: AuthenticatedUser = Depends(require_viewer)):
     """Get detailed project information."""
     return get_project_for_role_or_404(project_id, user.role)
+
+
+@router.get("/{project_id}/overview")
+async def get_project_overview(
+    project_id: str,
+    commit: str = None,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    """
+    Return project detail and README content in one payload for the overview page.
+    """
+    project = get_project_for_role_or_404(project_id, user.role)
+    return {
+        "project": project.model_dump(),
+        "readme": _load_project_readme_content(project, commit),
+    }
 
 
 @router.get("/{project_id}/comments/source-urls")
@@ -464,33 +515,10 @@ async def get_project_readme(
     For Type-2 projects, uses parent repo with relative path prefix.
     """
     project = get_project_for_role_or_404(project_id, user.role)
-    
-    # Get readme path from config
-    config = path_config_service.get_path_config(project.path)
-    readme_filename = config.readme or "README.md"
-    
-    # If viewing a specific commit, use Git
-    if commit:
-        try:
-            content = _read_file_from_commit(project, commit, readme_filename)
-            return {"content": content}
-        except HTTPException:
-            raise
-    
-    # Otherwise read from filesystem
-    resolved = path_config_service.resolve_paths(project.path)
-    readme_path = resolved.readme_path
-
-    if not readme_path:
+    content = _load_project_readme_content(project, commit)
+    if content is None:
         raise HTTPException(status_code=404, detail="README not found")
-
-    return {
-        "content": _read_utf8_file(
-            readme_path,
-            not_found_detail="README not found",
-            read_error_prefix="Error reading README",
-        )
-    }
+    return {"content": content}
 
 @router.get("/{project_id}/asset/{asset_path:path}")
 async def get_project_asset(
@@ -588,6 +616,22 @@ async def get_project_releases(project_id: str, user: AuthenticatedUser = Depend
     
     return {"releases": releases}
 
+@router.get("/{project_id}/commits/distance")
+async def get_project_commit_distance(
+    project_id: str,
+    commit: str,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    """
+    Count how many commits behind HEAD the requested commit is.
+    For Type-2 projects, only commits affecting the subproject path are counted.
+    """
+    project = get_project_for_role_or_404(project_id, user.role)
+
+    repo_path, relative_path = _repo_context(project)
+    commits_behind = get_commit_distance(repo_path, commit, relative_path)
+    return {"commits_behind": commits_behind}
+
 @router.get("/{project_id}/commits")
 async def get_project_commits(
     project_id: str,
@@ -671,11 +715,17 @@ async def get_project_config(project_id: str, user: AuthenticatedUser = Depends(
     
     config = path_config_service.get_path_config(project.path)
     resolved = path_config_service.resolve_paths(project.path, config)
+    explicit_config = path_config_service._load_prism_config(project.path)
+    effective_config = config.model_copy(deep=True)
+    if not effective_config.project_name:
+        effective_config.project_name = project.display_name
+    if not effective_config.description:
+        effective_config.description = project.description
     
     return {
-        "config": config.model_dump(),
+        "config": effective_config.model_dump(),
         "resolved": resolved.model_dump(),
-        "source": "explicit" if path_config_service._load_prism_config(project.path) else "auto-detected"
+        "source": "explicit" if explicit_config else "auto-detected"
     }
 
 
@@ -706,6 +756,14 @@ async def update_project_config(
     Saves configuration to .prism.json file.
     """
     project = get_project_for_role_or_404(project_id, user.role)
+
+    if config.project_name is not None:
+        normalized_name = config.project_name.strip()
+        config.project_name = normalized_name or None
+
+    if config.description is not None:
+        normalized_description = config.description.strip()
+        config.description = normalized_description or f"Project {project.name}"
     
     # Validate the config before saving
     validation = path_config_service.validate_config(project.path, config)
@@ -715,6 +773,8 @@ async def update_project_config(
     
     # Clear cache to ensure fresh resolution
     path_config_service.clear_config_cache(project.path)
+    project_service.invalidate_project_caches()
+    file_service.invalidate_file_listing_cache()
     
     # Get resolved paths
     resolved = path_config_service.resolve_paths(project.path, config)
@@ -771,6 +831,7 @@ async def update_project_name(
     
     # Save to .prism.json
     path_config_service.save_path_config(project.path, config)
+    project_service.invalidate_project_caches()
     
     return {
         "display_name": display_name,
