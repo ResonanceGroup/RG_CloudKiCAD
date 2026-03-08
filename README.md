@@ -2,7 +2,7 @@
 
 KiCAD Prism is a web platform for browsing, reviewing, and operating on KiCad repositories from the browser. It combines a FastAPI backend, a React/Vite frontend, repository import/sync flows, RBAC-based access control, comments export helpers, and manufacturing/documentation workflows in one workspace.
 
-![KiCAD Prism Home Page](assets/KiCAD-Prism-Home-Page.png)
+![KiCAD Prism Home Page](assets/KiCAD-Prism-Login-Page.png)
 
 ## Core Capabilities
 
