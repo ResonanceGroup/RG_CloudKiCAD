@@ -41,12 +41,8 @@ interface ReadmeResponse {
     content: string;
 }
 
-interface CommitSummary {
-    full_hash: string;
-}
-
-interface CommitsResponse {
-    commits: CommitSummary[];
+interface CommitDistanceResponse {
+    commits_behind: number;
 }
 
 interface WorkflowJobResponse {
@@ -184,18 +180,17 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
             }
 
             try {
-                const data = await fetchJson<CommitsResponse>(
-                    `/api/projects/${projectId}/commits`,
+                const data = await fetchJson<CommitDistanceResponse>(
+                    `/api/projects/${projectId}/commits/distance?commit=${encodeURIComponent(currentCommit)}`,
                     { signal: controller.signal },
-                    "Failed to fetch commit history"
+                    "Failed to fetch commit distance"
                 );
 
                 if (controller.signal.aborted) {
                     return;
                 }
 
-                const index = data.commits.findIndex((commit) => commit.full_hash === currentCommit);
-                setCommitsBehind(index >= 0 ? index : 0);
+                setCommitsBehind(data.commits_behind ?? 0);
             } catch (err) {
                 if (controller.signal.aborted) {
                     return;

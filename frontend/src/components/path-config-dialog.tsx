@@ -32,13 +32,15 @@ interface PathConfig {
     thumbnail?: string;
     readme?: string;
     jobset?: string;
-    projectName?: string;
+    project_name?: string;
+    description?: string;
     workflows?: unknown[];
 }
 
-interface ProjectDetailResponse {
-    display_name?: string;
-    description: string;
+interface PathConfigResponse {
+    config?: PathConfig;
+    resolved?: Record<string, string | null>;
+    source?: string;
 }
 
 interface PathConfigDialogProps {
@@ -89,8 +91,6 @@ const PATH_LABELS: Record<string, { label: string; description: string }> = {
 export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDialogProps) {
     const [config, setConfig] = useState<PathConfig>({});
     const [originalConfig, setOriginalConfig] = useState<PathConfig>({});
-    const [description, setDescription] = useState<string>("");
-    const [originalDescription, setOriginalDescription] = useState<string>("");
     const [workflowsText, setWorkflowsText] = useState<string>("[]");
     const [workflowsError, setWorkflowsError] = useState<string | null>(null);
     const [resolvedPaths, setResolvedPaths] = useState<Record<string, string | null>>({});
@@ -98,31 +98,24 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
     const [saving, setSaving] = useState(false);
     const [detecting, setDetecting] = useState(false);
 
+    const formatWorkflows = useCallback(
+        (workflows?: unknown[]) => JSON.stringify(Array.isArray(workflows) ? workflows : [], null, 2),
+        []
+    );
+
     const fetchConfig = useCallback(async (signal?: AbortSignal) => {
         try {
-            const [configResponse, projectResponse] = await Promise.all([
-                fetch(`/api/projects/${projectId}/config`, { signal }),
-                fetch(`/api/projects/${projectId}`, { signal })
-            ]);
-            
-            if (configResponse.ok) {
-                const data = await configResponse.json();
-                setConfig(data.config || {});
-                setOriginalConfig(data.config || {});
+            const response = await fetch(`/api/projects/${projectId}/config`, { signal });
+
+            if (response.ok) {
+                const data = (await response.json()) as PathConfigResponse;
+                const nextConfig = data.config || {};
+                setConfig(nextConfig);
+                setOriginalConfig(nextConfig);
                 setResolvedPaths(data.resolved || {});
                 setSource(data.source || "auto-detected");
-                const workflows = Array.isArray(data?.config?.workflows) ? data.config.workflows : [];
-                setWorkflowsText(JSON.stringify(workflows, null, 2));
+                setWorkflowsText(formatWorkflows(nextConfig.workflows));
                 setWorkflowsError(null);
-            }
-            
-            if (projectResponse.ok) {
-                const projectData = (await projectResponse.json()) as ProjectDetailResponse;
-                setConfig(prev => ({ ...prev, projectName: projectData.display_name }));
-                setOriginalConfig(prev => ({ ...prev, projectName: projectData.display_name }));
-                const currentDescription = projectData?.description || "";
-                setDescription(currentDescription);
-                setOriginalDescription(currentDescription);
             }
         } catch (err) {
             if (err instanceof DOMException && err.name === "AbortError") {
@@ -130,7 +123,7 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
             }
             console.error("Failed to fetch config:", err);
         }
-    }, [projectId]);
+    }, [formatWorkflows, projectId]);
 
     const detectPaths = async () => {
         setDetecting(true);
@@ -170,50 +163,50 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
 
         setSaving(true);
         try {
+            const shouldSaveName =
+                config.project_name !== originalConfig.project_name && Boolean(config.project_name?.trim());
+            const normalizedName = config.project_name?.trim();
             const configPayload = {
                 ...config,
+                description: config.description ?? "",
                 workflows: parsedWorkflows,
             };
+            delete configPayload.project_name;
 
-            // Save both path config and project name
-            const [configResponse, nameResponse, descriptionResponse] = await Promise.all([
+            const [configResponse, nameResponse] = await Promise.all([
                 fetch(`/api/projects/${projectId}/config`, {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(configPayload),
                 }),
-                // Only save project name if it has changed
-                config.projectName !== originalConfig.projectName && config.projectName
+                shouldSaveName
                     ? fetch(`/api/projects/${projectId}/name`, {
                         method: "PUT",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ display_name: config.projectName }),
-                    })
-                    : Promise.resolve({ ok: true }),
-                description !== originalDescription
-                    ? fetch(`/api/projects/${projectId}/description`, {
-                        method: "PUT",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ description }),
+                        body: JSON.stringify({ display_name: config.project_name?.trim() }),
                     })
                     : Promise.resolve({ ok: true })
             ]);
             
             if (configResponse.ok) {
-                const data = await configResponse.json();
-                setConfig(configPayload);
-                setOriginalConfig(configPayload);
+                const data = (await configResponse.json()) as PathConfigResponse;
+                const normalizedDescription =
+                    config.description?.trim() ? config.description.trim() : data.config?.description;
+                const nextConfig = {
+                    ...config,
+                    project_name: shouldSaveName && nameResponse.ok ? normalizedName : config.project_name,
+                    description: normalizedDescription,
+                    workflows: parsedWorkflows,
+                };
+                const nextOriginalConfig = {
+                    ...nextConfig,
+                    project_name: shouldSaveName && nameResponse.ok ? normalizedName : originalConfig.project_name,
+                };
+
+                setConfig(nextConfig);
+                setOriginalConfig(nextOriginalConfig);
                 setResolvedPaths(data.resolved || {});
                 setSource("explicit");
-            }
-            
-            if (nameResponse.ok && config.projectName !== originalConfig.projectName) {
-                // Project name saved successfully
-                console.log("Project name updated");
-            }
-
-            if (descriptionResponse.ok && description !== originalDescription) {
-                setOriginalDescription(description);
             }
         } catch (err) {
             console.error("Failed to save config:", err);
@@ -236,8 +229,7 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
 
     const hasChanges =
         JSON.stringify(config) !== JSON.stringify(originalConfig) ||
-        description !== originalDescription ||
-        workflowsText !== JSON.stringify(Array.isArray(originalConfig.workflows) ? originalConfig.workflows : [], null, 2);
+        workflowsText !== formatWorkflows(originalConfig.workflows);
 
     const getStatusIcon = (key: string) => {
         const resolved = resolvedPaths[key];
@@ -305,8 +297,8 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
                             </div>
                             <Input
                                 id="projectName"
-                                value={config.projectName || ""}
-                                onChange={(e) => handleChange("projectName", e.target.value)}
+                                value={config.project_name || ""}
+                                onChange={(e) => handleChange("project_name", e.target.value)}
                                 placeholder="Enter custom project name"
                                 className="h-8"
                             />
@@ -321,8 +313,8 @@ export function PathConfigDialog({ projectId, open, onOpenChange }: PathConfigDi
                             </Label>
                             <Textarea
                                 id="projectDescription"
-                                value={description}
-                                onChange={(e) => setDescription(e.target.value)}
+                                value={config.description || ""}
+                                onChange={(e) => handleChange("description", e.target.value)}
                                 placeholder="Describe this project"
                                 className="min-h-20"
                             />
