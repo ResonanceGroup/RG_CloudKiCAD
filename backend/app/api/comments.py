@@ -8,13 +8,14 @@ comments.json is generated from DB only during push/export workflows.
 import os
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.api._helpers import get_project_or_404
+from app.api._helpers import get_project_for_role_or_404
+from app.core.security import AuthenticatedUser, require_designer, require_viewer
 from app.services.comments_store_service import comments_store
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_viewer)])
 
 
 # ============================================================
@@ -94,20 +95,24 @@ def _normalize_content(content: str, *, field: str = "content") -> str:
 # ============================================================
 
 @router.get("/{project_id}/comments")
-async def get_comments(project_id: str):
+async def get_comments(project_id: str, user: AuthenticatedUser = Depends(require_viewer)):
     """
     Get all comments for a project from DB snapshot.
     """
-    project = get_project_or_404(project_id)
+    project = get_project_for_role_or_404(project_id, user.role)
     return comments_store.get_comments_file(project.id, project.path)
 
 
-@router.post("/{project_id}/comments")
-async def create_comment(project_id: str, request: CreateCommentRequest):
+@router.post("/{project_id}/comments", dependencies=[Depends(require_designer)])
+async def create_comment(
+    project_id: str,
+    request: CreateCommentRequest,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
     """
     Create a new comment on the design.
     """
-    project = get_project_or_404(project_id)
+    project = get_project_for_role_or_404(project_id, user.role)
 
     context = _normalize_context(request.context)
     content = _normalize_content(request.content)
@@ -122,12 +127,17 @@ async def create_comment(project_id: str, request: CreateCommentRequest):
     )
 
 
-@router.patch("/{project_id}/comments/{comment_id}")
-async def update_comment(project_id: str, comment_id: str, request: UpdateCommentRequest):
+@router.patch("/{project_id}/comments/{comment_id}", dependencies=[Depends(require_designer)])
+async def update_comment(
+    project_id: str,
+    comment_id: str,
+    request: UpdateCommentRequest,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
     """
     Update a comment's status (e.g., resolve it).
     """
-    project = get_project_or_404(project_id)
+    project = get_project_for_role_or_404(project_id, user.role)
 
     if request.status is None:
         raise HTTPException(status_code=400, detail="No update fields provided")
@@ -149,12 +159,17 @@ async def update_comment(project_id: str, comment_id: str, request: UpdateCommen
     return updated_comment
 
 
-@router.post("/{project_id}/comments/{comment_id}/replies")
-async def add_reply(project_id: str, comment_id: str, request: CreateReplyRequest):
+@router.post("/{project_id}/comments/{comment_id}/replies", dependencies=[Depends(require_designer)])
+async def add_reply(
+    project_id: str,
+    comment_id: str,
+    request: CreateReplyRequest,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
     """
     Add a reply to an existing comment.
     """
-    project = get_project_or_404(project_id)
+    project = get_project_for_role_or_404(project_id, user.role)
 
     result = comments_store.add_reply(
         project_id=project.id,
@@ -171,12 +186,16 @@ async def add_reply(project_id: str, comment_id: str, request: CreateReplyReques
     return {"comment": comment, "reply": reply}
 
 
-@router.delete("/{project_id}/comments/{comment_id}")
-async def delete_comment(project_id: str, comment_id: str):
+@router.delete("/{project_id}/comments/{comment_id}", dependencies=[Depends(require_designer)])
+async def delete_comment(
+    project_id: str,
+    comment_id: str,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
     """
     Delete a comment.
     """
-    project = get_project_or_404(project_id)
+    project = get_project_for_role_or_404(project_id, user.role)
 
     deleted = comments_store.delete_comment(
         project_id=project.id,
@@ -194,13 +213,13 @@ async def delete_comment(project_id: str, comment_id: str):
 # EXPORT ENDPOINT
 # ============================================================
 
-@router.post("/{project_id}/comments/push")
-async def push_comments(project_id: str):
+@router.post("/{project_id}/comments/push", dependencies=[Depends(require_designer)])
+async def push_comments(project_id: str, user: AuthenticatedUser = Depends(require_viewer)):
     """
     Export DB snapshot to comments.json artifact only.
     Git commit/push is intentionally left to the user workflow.
     """
-    project = get_project_or_404(project_id)
+    project = get_project_for_role_or_404(project_id, user.role)
 
     try:
         comments_path = comments_store.export_comments_json(project.id, project.path)

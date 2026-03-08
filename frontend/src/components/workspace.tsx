@@ -1,20 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { toast } from "sonner";
 
-import { FolderTreeItem, Project } from "@/types/project";
-import { ImportDialog } from "./import-dialog";
-import { SettingsDialog } from "./settings-dialog";
+import type { User } from "@/types/auth";
+import type { FolderTreeItem, Project } from "@/types/project";
 import { Button } from "@/components/ui/button";
 import { useWorkspaceData } from "@/hooks/use-workspace-data";
 import { useWorkspaceSearch } from "@/hooks/use-workspace-search";
-
-import { CreateFolderDialog } from "./workspace/create-folder-dialog";
-import { DeleteFolderDialog } from "./workspace/delete-folder-dialog";
-import { DeleteProjectDialog } from "./workspace/delete-project-dialog";
-import { MoveProjectDialog } from "./workspace/move-project-dialog";
-import { RenameFolderDialog } from "./workspace/rename-folder-dialog";
 import { WorkspaceAppsPlaceholder } from "./workspace/workspace-apps-placeholder";
 import { WorkspaceBreadcrumbs } from "./workspace/workspace-breadcrumbs";
 import { WorkspaceGalleryView } from "./workspace/workspace-gallery-view";
@@ -24,11 +17,34 @@ import { WorkspaceProjectToolbar } from "./workspace/workspace-project-toolbar";
 import { WorkspaceSidebar } from "./workspace/workspace-sidebar";
 import { WorkspaceSection, ViewMode } from "./workspace/workspace-types";
 
+const ImportDialog = lazy(() =>
+  import("./import-dialog").then((module) => ({ default: module.ImportDialog }))
+);
+const SettingsDialog = lazy(() =>
+  import("./settings-dialog").then((module) => ({ default: module.SettingsDialog }))
+);
+const CreateFolderDialog = lazy(() =>
+  import("./workspace/create-folder-dialog").then((module) => ({ default: module.CreateFolderDialog }))
+);
+const DeleteFolderDialog = lazy(() =>
+  import("./workspace/delete-folder-dialog").then((module) => ({ default: module.DeleteFolderDialog }))
+);
+const DeleteProjectDialog = lazy(() =>
+  import("./workspace/delete-project-dialog").then((module) => ({ default: module.DeleteProjectDialog }))
+);
+const MoveProjectDialog = lazy(() =>
+  import("./workspace/move-project-dialog").then((module) => ({ default: module.MoveProjectDialog }))
+);
+const RenameFolderDialog = lazy(() =>
+  import("./workspace/rename-folder-dialog").then((module) => ({ default: module.RenameFolderDialog }))
+);
+
 interface WorkspaceProps {
   searchQuery: string;
+  user: User | null;
 }
 
-export function Workspace({ searchQuery }: WorkspaceProps) {
+export function Workspace({ searchQuery, user }: WorkspaceProps) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -56,6 +72,8 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
 
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
   const [isDeletingProject, setIsDeletingProject] = useState(false);
+  const canManageProjects = user?.role === "admin" || user?.role === "designer";
+  const canOpenSettings = user?.role === "admin";
 
   const getProjectDisplayName = (project: Project) => project.display_name || project.name;
   const folderFromUrl = searchParams.get("folder");
@@ -125,6 +143,11 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
   };
 
   const handleCreateFolder = async (name: string) => {
+    if (!canManageProjects) {
+      toast.error("You do not have permission to create folders");
+      return;
+    }
+
     setIsCreatingFolder(true);
     try {
       const result = await createFolder(name, currentFolderId);
@@ -141,6 +164,11 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
   };
 
   const handleRenameFolder = async (folderId: string, name: string) => {
+    if (!canManageProjects) {
+      toast.error("You do not have permission to rename folders");
+      return;
+    }
+
     setIsRenamingFolder(true);
     try {
       const result = await renameFolder(folderId, name);
@@ -157,6 +185,11 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
   };
 
   const handleDeleteFolder = async (folderId: string) => {
+    if (!canManageProjects) {
+      toast.error("You do not have permission to delete folders");
+      return;
+    }
+
     setIsDeletingFolder(true);
     try {
       const deletedFolderName = folderToDelete?.name || "folder";
@@ -174,6 +207,11 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
   };
 
   const handleMoveProject = async (projectId: string, folderId: string | null) => {
+    if (!canManageProjects) {
+      toast.error("You do not have permission to move projects");
+      return;
+    }
+
     setIsMovingProject(true);
     try {
       const movedProjectName = projectToMove ? getProjectDisplayName(projectToMove) : "project";
@@ -191,6 +229,11 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
   };
 
   const handleDeleteProject = async (projectId: string) => {
+    if (!canManageProjects) {
+      toast.error("You do not have permission to delete projects");
+      return;
+    }
+
     setIsDeletingProject(true);
     try {
       const deletedProjectName = projectToDelete ? getProjectDisplayName(projectToDelete) : "project";
@@ -238,10 +281,12 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
               <WorkspaceProjectToolbar
                 viewMode={viewMode}
                 onViewModeChange={setViewMode}
-                onImport={() => setIsImportOpen(true)}
-                onCreateFolder={() => setIsCreateFolderOpen(true)}
+                onImport={() => canManageProjects && setIsImportOpen(true)}
+                onCreateFolder={() => canManageProjects && setIsCreateFolderOpen(true)}
                 onRefresh={() => void refresh()}
-                onOpenSettings={() => setIsSettingsOpen(true)}
+                onOpenSettings={() => canOpenSettings && setIsSettingsOpen(true)}
+                canManageProjects={canManageProjects}
+                canOpenSettings={canOpenSettings}
               />
             )}
           </header>
@@ -276,6 +321,7 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
                     onDeleteFolder={setFolderToDelete}
                     onMoveProject={setProjectToMove}
                     onDeleteProject={setProjectToDelete}
+                    canManageProjects={canManageProjects}
                   />
                 ) : (
                   <WorkspaceListView
@@ -291,6 +337,7 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
                     onDeleteFolder={setFolderToDelete}
                     onMoveProject={setProjectToMove}
                     onDeleteProject={setProjectToDelete}
+                    canManageProjects={canManageProjects}
                   />
                 )}
               </div>
@@ -299,42 +346,70 @@ export function Workspace({ searchQuery }: WorkspaceProps) {
         </div>
       </div>
 
-      <ImportDialog open={isImportOpen} onOpenChange={setIsImportOpen} onImportComplete={refresh} />
-      <SettingsDialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen} />
+      {isImportOpen && (
+        <Suspense fallback={null}>
+          <ImportDialog open={isImportOpen} onOpenChange={setIsImportOpen} onImportComplete={refresh} />
+        </Suspense>
+      )}
+      {isSettingsOpen && (
+        <Suspense fallback={null}>
+          <SettingsDialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen} user={user} />
+        </Suspense>
+      )}
 
-      <CreateFolderDialog
-        open={isCreateFolderOpen}
-        isSubmitting={isCreatingFolder}
-        onOpenChange={setIsCreateFolderOpen}
-        onSubmit={handleCreateFolder}
-      />
-      <RenameFolderDialog
-        folder={folderToRename}
-        isSubmitting={isRenamingFolder}
-        onClose={() => setFolderToRename(null)}
-        onSubmit={handleRenameFolder}
-      />
-      <DeleteFolderDialog
-        folder={folderToDelete}
-        isDeleting={isDeletingFolder}
-        onClose={() => setFolderToDelete(null)}
-        onConfirm={handleDeleteFolder}
-      />
-      <MoveProjectDialog
-        project={projectToMove}
-        folders={folders}
-        isMoving={isMovingProject}
-        onClose={() => setProjectToMove(null)}
-        onConfirm={handleMoveProject}
-        getProjectDisplayName={getProjectDisplayName}
-      />
-      <DeleteProjectDialog
-        project={projectToDelete}
-        isDeleting={isDeletingProject}
-        onClose={() => setProjectToDelete(null)}
-        onConfirm={handleDeleteProject}
-        getProjectDisplayName={getProjectDisplayName}
-      />
+      {isCreateFolderOpen && (
+        <Suspense fallback={null}>
+          <CreateFolderDialog
+            open={isCreateFolderOpen}
+            isSubmitting={isCreatingFolder}
+            onOpenChange={setIsCreateFolderOpen}
+            onSubmit={handleCreateFolder}
+          />
+        </Suspense>
+      )}
+      {folderToRename && (
+        <Suspense fallback={null}>
+          <RenameFolderDialog
+            folder={folderToRename}
+            isSubmitting={isRenamingFolder}
+            onClose={() => setFolderToRename(null)}
+            onSubmit={handleRenameFolder}
+          />
+        </Suspense>
+      )}
+      {folderToDelete && (
+        <Suspense fallback={null}>
+          <DeleteFolderDialog
+            folder={folderToDelete}
+            isDeleting={isDeletingFolder}
+            onClose={() => setFolderToDelete(null)}
+            onConfirm={handleDeleteFolder}
+          />
+        </Suspense>
+      )}
+      {projectToMove && (
+        <Suspense fallback={null}>
+          <MoveProjectDialog
+            project={projectToMove}
+            folders={folders}
+            isMoving={isMovingProject}
+            onClose={() => setProjectToMove(null)}
+            onConfirm={handleMoveProject}
+            getProjectDisplayName={getProjectDisplayName}
+          />
+        </Suspense>
+      )}
+      {projectToDelete && (
+        <Suspense fallback={null}>
+          <DeleteProjectDialog
+            project={projectToDelete}
+            isDeleting={isDeletingProject}
+            onClose={() => setProjectToDelete(null)}
+            onConfirm={handleDeleteProject}
+            getProjectDisplayName={getProjectDisplayName}
+          />
+        </Suspense>
+      )}
     </>
   );
 }

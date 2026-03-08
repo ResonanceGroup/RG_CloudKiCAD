@@ -1,7 +1,10 @@
+export type UserRole = "admin" | "designer" | "viewer";
+
 export interface User {
     name: string;
     email: string;
     picture?: string;
+    role: UserRole;
 }
 
 export interface AuthConfig {

@@ -1,11 +1,14 @@
 import os
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from git import Repo
+from git.exc import BadName, GitCommandError
 from typing import List, Dict, Any
 from pydantic import BaseModel
 import datetime
 
-router = APIRouter()
+from app.core.security import require_viewer
+
+router = APIRouter(dependencies=[Depends(require_viewer)])
 
 # Configuration
 # Default to sibling directory for development
@@ -18,50 +21,77 @@ class CommitInfo(BaseModel):
     date: str
 
 
+def _open_repo(repo_path: str) -> Repo:
+    if not os.path.exists(repo_path):
+        raise HTTPException(status_code=404, detail=f"Repository not found at {repo_path}")
+
+    try:
+        return Repo(repo_path)
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Git error: {str(error)}") from error
+
+
+def _serialize_commit(commit) -> Dict[str, str]:
+    return {
+        "hash": commit.hexsha[:7],
+        "full_hash": commit.hexsha,
+        "author": commit.author.name,
+        "email": commit.author.email,
+        "date": datetime.datetime.fromtimestamp(commit.committed_date).isoformat(),
+        "message": commit.message.strip(),
+    }
+
+
+def _get_commits(repo_path: str, limit: int, relative_path: str = None):
+    repo = _open_repo(repo_path)
+    iter_kwargs = {"max_count": limit}
+    if relative_path:
+        iter_kwargs["paths"] = relative_path
+
+    try:
+        return [_serialize_commit(commit) for commit in repo.iter_commits(**iter_kwargs)]
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Git error: {str(error)}") from error
+
+
 def get_commits_list_filtered(repo_path: str, relative_path: str = None, limit: int = 50):
     """
     Get list of commits from repository, optionally filtered to a subdirectory.
     For Type-2 projects, relative_path scopes commits to the subproject.
     """
-    if not os.path.exists(repo_path):
-        raise HTTPException(status_code=404, detail=f"Repository not found at {repo_path}")
-    
+    return _get_commits(repo_path, limit, relative_path)
+
+
+def _count_tree_entries(commit, relative_path: str) -> int | None:
     try:
-        repo = Repo(repo_path)
-        commits = []
-        
-        for commit in repo.iter_commits(max_count=limit * 3):  # Fetch more to account for filtering
-            # If relative_path provided, filter to commits that touched files under that path
-            if relative_path:
-                # Use diff to get changed files - more reliable than stats
-                changed_files = []
-                if commit.parents:
-                    # Compare with parent to get changed files
-                    diff = commit.parents[0].diff(commit)
-                    changed_files = [d.a_path or d.b_path for d in diff if d.a_path or d.b_path]
-                else:
-                    # Initial commit - list all files in tree
-                    changed_files = [item.path for item in commit.tree.traverse() if item.type == 'blob']
-                
-                # Check if any file starts with the relative_path
-                if not any(f.startswith(relative_path) for f in changed_files):
-                    continue
-            
-            commits.append({
-                "hash": commit.hexsha[:7],
-                "full_hash": commit.hexsha,
-                "author": commit.author.name,
-                "email": commit.author.email,
+        target = commit.tree / relative_path
+        if target.type == "tree":
+            return len(list(target.traverse()))
+    except Exception:
+        return None
+    return None
+
+
+def _get_releases(repo_path: str, relative_path: str = None):
+    repo = _open_repo(repo_path)
+    releases = []
+    try:
+        for tag in repo.tags:
+            commit = tag.commit
+            release = {
+                "tag": tag.name,
+                "commit_hash": commit.hexsha[:7],
                 "date": datetime.datetime.fromtimestamp(commit.committed_date).isoformat(),
-                "message": commit.message.strip()
-            })
-            
-            if len(commits) >= limit:
-                break
-                
-        return commits
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Git error: {str(e)}")
+                "message": commit.message.strip(),
+            }
+            if relative_path:
+                release["subproject_files_changed"] = _count_tree_entries(commit, relative_path)
+            releases.append(release)
+
+        releases.sort(key=lambda item: item["date"], reverse=True)
+        return releases
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Git error: {str(error)}") from error
 
 
 def get_releases_filtered(repo_path: str, relative_path: str = None):
@@ -69,38 +99,7 @@ def get_releases_filtered(repo_path: str, relative_path: str = None):
     Get list of Git tags/releases from repository.
     For Type-2 projects, shows file count under relative_path for each tag.
     """
-    if not os.path.exists(repo_path):
-        raise HTTPException(status_code=404, detail=f"Repository not found at {repo_path}")
-    
-    try:
-        repo = Repo(repo_path)
-        releases = []
-        for tag in repo.tags:
-            commit = tag.commit
-            
-            # Count files under relative_path if provided
-            file_count = None
-            if relative_path:
-                try:
-                    tree = commit.tree
-                    target = tree / relative_path
-                    if target.type == 'tree':
-                        file_count = len(list(target.traverse()))
-                except:
-                    pass
-            
-            releases.append({
-                "tag": tag.name,
-                "commit_hash": commit.hexsha[:7],
-                "date": datetime.datetime.fromtimestamp(commit.committed_date).isoformat(),
-                "message": commit.message.strip(),
-                "subproject_files_changed": file_count
-            })
-        # Sort by date descending (newest first)
-        releases.sort(key=lambda x: x['date'], reverse=True)
-        return releases
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Git error: {str(e)}")
+    return _get_releases(repo_path, relative_path)
 
 
 def get_file_from_commit_with_prefix(repo_path: str, commit_hash: str, file_path: str, relative_prefix: str = None) -> str:
@@ -161,11 +160,8 @@ async def list_commits(repo_path: str = DEFAULT_REPO_PATH, limit: int = 50):
     """
     List commits for a given repository.
     """
-    if not os.path.exists(repo_path):
-        raise HTTPException(status_code=404, detail=f"Repository not found at {repo_path}")
-    
     try:
-        repo = Repo(repo_path)
+        repo = _open_repo(repo_path)
         commits = []
         for commit in repo.iter_commits(max_count=limit):
             commits.append(CommitInfo(
@@ -175,65 +171,55 @@ async def list_commits(repo_path: str = DEFAULT_REPO_PATH, limit: int = 50):
                 date=datetime.datetime.fromtimestamp(commit.committed_date).isoformat()
             ))
         return commits
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Git error: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Git error: {str(error)}") from error
 
 def get_releases(repo_path: str):
     """
     Get list of Git tags/releases from repository.
     """
-    if not os.path.exists(repo_path):
-        raise HTTPException(status_code=404, detail=f"Repository not found at {repo_path}")
-    
-    try:
-        repo = Repo(repo_path)
-        releases = []
-        for tag in repo.tags:
-            releases.append({
-                "tag": tag.name,
-                "commit_hash": tag.commit.hexsha[:7],
-                "date": datetime.datetime.fromtimestamp(tag.commit.committed_date).isoformat(),
-                "message": tag.commit.message.strip()
-            })
-        # Sort by date descending (newest first)
-        releases.sort(key=lambda x: x['date'], reverse=True)
-        return releases
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Git error: {str(e)}")
+    return _get_releases(repo_path)
 
 def get_commits_list(repo_path: str, limit: int = 50):
     """
     Get list of commits from repository.
     """
-    if not os.path.exists(repo_path):
-        raise HTTPException(status_code=404, detail=f"Repository not found at {repo_path}")
-    
+    return _get_commits(repo_path, limit)
+
+
+def get_commit_distance(repo_path: str, commit_hash: str, relative_path: str = None) -> int:
+    """
+    Count commits between the requested commit and HEAD.
+    When relative_path is provided, only count commits that affect that path.
+    """
     try:
-        repo = Repo(repo_path)
-        commits = []
-        for commit in repo.iter_commits(max_count=limit):
-            commits.append({
-                "hash": commit.hexsha[:7],
-                "full_hash": commit.hexsha,
-                "author": commit.author.name,
-                "email": commit.author.email,
-                "date": datetime.datetime.fromtimestamp(commit.committed_date).isoformat(),
-                "message": commit.message.strip()
-            })
-        return commits
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Git error: {str(e)}")
+        repo = _open_repo(repo_path)
+        repo.commit(commit_hash)
+
+        rev_list_args = ["--count", f"{commit_hash}..HEAD"]
+        if relative_path:
+            rev_list_args.extend(["--", relative_path])
+
+        return int(repo.git.rev_list(*rev_list_args).strip() or "0")
+    except BadName as error:
+        raise HTTPException(status_code=404, detail=f"Commit not found: {commit_hash}") from error
+    except GitCommandError as error:
+        message = str(error).lower()
+        if "bad revision" in message or "unknown revision" in message:
+            raise HTTPException(status_code=404, detail=f"Commit not found: {commit_hash}") from error
+        raise HTTPException(status_code=500, detail=f"Git error: {str(error)}") from error
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Git error: {str(error)}") from error
 
 @router.get("/content")
 async def get_file_content(commit_sha: str, file_path: str, repo_path: str = DEFAULT_REPO_PATH):
     """
     Get file content from a specific commit.
     """
-    if not os.path.exists(repo_path):
-         raise HTTPException(status_code=404, detail=f"Repository not found at {repo_path}")
-
     try:
-        repo = Repo(repo_path)
+        repo = _open_repo(repo_path)
         commit = repo.commit(commit_sha)
         
         try:

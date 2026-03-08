@@ -2,12 +2,8 @@ import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Suspense, lazy, useEffect, useState, type ComponentType } from "react";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, FileText, History, Box, FolderOpen, ChevronLeft, ChevronRight, GitBranch, RotateCcw, PlayCircle, RefreshCw, Menu, Settings } from "lucide-react";
-import { fetchJson, readApiError } from "@/lib/api";
+import { fetchApi, fetchJson, readApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeRaw from "rehype-raw";
-import "github-markdown-css/github-markdown-dark.css";
 import { User } from "@/types/auth";
 
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -27,6 +23,9 @@ const HistoryViewer = lazy(() =>
 const Visualizer = lazy(() =>
     import("@/components/visualizer").then((module) => ({ default: module.Visualizer }))
 );
+const MarkdownContent = lazy(() =>
+    import("@/components/markdown-content").then((module) => ({ default: module.MarkdownContent }))
+);
 
 interface Project {
     id: string;
@@ -38,20 +37,13 @@ interface Project {
     last_modified: string;
 }
 
-interface ProjectNameResponse {
-    display_name?: string;
+interface CommitDistanceResponse {
+    commits_behind: number;
 }
 
-interface ReadmeResponse {
-    content: string;
-}
-
-interface CommitSummary {
-    full_hash: string;
-}
-
-interface CommitsResponse {
-    commits: CommitSummary[];
+interface ProjectOverviewResponse {
+    project: Project;
+    readme: string | null;
 }
 
 interface WorkflowJobResponse {
@@ -83,6 +75,7 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
     const [visualizerLoaded, setVisualizerLoaded] = useState(false);
     const [refreshKey, setRefreshKey] = useState(0);
     const [pathConfigOpen, setPathConfigOpen] = useState(false);
+    const canMutateProject = user?.role === "admin" || user?.role === "designer";
 
     // Helper function to get display name
     const getDisplayName = (project: Project) => {
@@ -106,7 +99,7 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
     };
 
     const handleSync = async () => {
-        if (!projectId || syncing) return;
+        if (!projectId || syncing || !canMutateProject) return;
 
         setSyncing(true);
         setSyncMessage(null);
@@ -139,29 +132,21 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
 
         const fetchProjectData = async () => {
             try {
-                const readmeUrl = currentCommit
-                    ? `/api/projects/${projectId}/readme?commit=${currentCommit}`
-                    : `/api/projects/${projectId}/readme`;
-
-                const [projectData, nameData, readmeData] = await Promise.all([
-                    fetchJson<Project>(`/api/projects/${projectId}`, { signal: controller.signal }, "Failed to fetch project"),
-                    fetchJson<ProjectNameResponse>(
-                        `/api/projects/${projectId}/name`,
-                        { signal: controller.signal },
-                        "Failed to fetch project name"
-                    ).catch(() => null),
-                    fetchJson<ReadmeResponse>(readmeUrl, { signal: controller.signal }, "README not found").catch(() => null),
-                ]);
+                const overviewUrl = currentCommit
+                    ? `/api/projects/${projectId}/overview?commit=${encodeURIComponent(currentCommit)}`
+                    : `/api/projects/${projectId}/overview`;
+                const overview = await fetchJson<ProjectOverviewResponse>(
+                    overviewUrl,
+                    { signal: controller.signal },
+                    "Failed to fetch project overview"
+                );
 
                 if (controller.signal.aborted) {
                     return;
                 }
 
-                setProject({
-                    ...projectData,
-                    display_name: nameData?.display_name ?? projectData.display_name,
-                });
-                setReadme(readmeData?.content ?? "");
+                setProject(overview.project);
+                setReadme(overview.readme ?? "");
             } catch (err) {
                 if (controller.signal.aborted) {
                     return;
@@ -196,18 +181,17 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
             }
 
             try {
-                const data = await fetchJson<CommitsResponse>(
-                    `/api/projects/${projectId}/commits`,
+                const data = await fetchJson<CommitDistanceResponse>(
+                    `/api/projects/${projectId}/commits/distance?commit=${encodeURIComponent(currentCommit)}`,
                     { signal: controller.signal },
-                    "Failed to fetch commit history"
+                    "Failed to fetch commit distance"
                 );
 
                 if (controller.signal.aborted) {
                     return;
                 }
 
-                const index = data.commits.findIndex((commit) => commit.full_hash === currentCommit);
-                setCommitsBehind(index >= 0 ? index : 0);
+                setCommitsBehind(data.commits_behind ?? 0);
             } catch (err) {
                 if (controller.signal.aborted) {
                     return;
@@ -296,27 +280,30 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
                 </div>
 
                 {/* Sync Button */}
-                <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleSync}
-                    disabled={syncing}
-                    className="flex items-center gap-2"
-                    title="Sync with remote repository"
-                >
-                    <RefreshCw className={cn("h-4 w-4", syncing && "animate-spin")} />
-                    {syncing ? 'Syncing...' : 'Sync'}
-                </Button>
+                {canMutateProject && (
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleSync}
+                        disabled={syncing}
+                        className="flex items-center gap-2"
+                        title="Sync with remote repository"
+                    >
+                        <RefreshCw className={cn("h-4 w-4", syncing && "animate-spin")} />
+                        {syncing ? 'Syncing...' : 'Sync'}
+                    </Button>
+                )}
 
-                {/* Path Config Button */}
-                <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={() => setPathConfigOpen(true)}
-                    title="Project settings"
-                >
-                    <Settings className="h-4 w-4" />
-                </Button>
+                {canMutateProject && (
+                    <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={() => setPathConfigOpen(true)}
+                        title="Project settings"
+                    >
+                        <Settings className="h-4 w-4" />
+                    </Button>
+                )}
 
                 {projectId && pathConfigOpen && (
                     <Suspense fallback={null}>
@@ -432,28 +419,14 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
                             </div>
 
                             {readme && (
-                                <div className="markdown-body" style={{ background: 'transparent' }}>
-                                    <ReactMarkdown
-                                        remarkPlugins={[remarkGfm]}
-                                        rehypePlugins={[rehypeRaw]}
-                                        components={{
-                                            img: ({ src, alt }) => {
-                                                // Convert relative image paths to use backend API
-                                                const imgSrc = src?.startsWith('http')
-                                                    ? src
-                                                    : `/api/projects/${projectId}/asset/${src}`;
-                                                return (
-                                                    <img
-                                                        src={imgSrc}
-                                                        alt={alt || ''}
-                                                    />
-                                                );
-                                            }
-                                        }}
-                                    >
-                                        {readme}
-                                    </ReactMarkdown>
-                                </div>
+                                <Suspense fallback={<div className="text-sm text-muted-foreground">Loading README...</div>}>
+                                    <MarkdownContent
+                                        content={readme}
+                                        resolveImageSrc={(src) =>
+                                            src?.startsWith('http') ? src : `/api/projects/${projectId}/asset/${src}`
+                                        }
+                                    />
+                                </Suspense>
                             )}
 
                             {!readme && (
@@ -489,7 +462,12 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
                             <h2 className="text-2xl font-bold mb-6">History</h2>
                             {projectId && (
                                 <Suspense fallback={<div className="text-sm text-muted-foreground">Loading history...</div>}>
-                                    <HistoryViewer key={refreshKey} projectId={projectId} onViewCommit={handleViewCommit} />
+                                    <HistoryViewer
+                                        key={refreshKey}
+                                        projectId={projectId}
+                                        onViewCommit={handleViewCommit}
+                                        canCompareDiffs={canMutateProject}
+                                    />
                                 </Suspense>
                             )}
                         </div>
@@ -515,7 +493,7 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
 
                     {activeSection === "workflows" && (
                         <div>
-                            <WorkflowsPanel projectId={projectId!} user={user} />
+                            <WorkflowsPanel projectId={projectId!} user={user} canRun={canMutateProject} />
                         </div>
                     )}
 
@@ -527,7 +505,7 @@ export function ProjectDetailPage({ user }: { user: User | null }) {
 }
 
 // Workflows Sub-component
-function WorkflowsPanel({ projectId, user }: { projectId: string, user: User | null }) {
+function WorkflowsPanel({ projectId, user, canRun }: { projectId: string, user: User | null, canRun: boolean }) {
     const [runningJob, setRunningJob] = useState<{ id: string, type: string } | null>(null);
     const [logs, setLogs] = useState<string[]>([]);
     const [status, setStatus] = useState<string>("idle");
@@ -566,10 +544,14 @@ function WorkflowsPanel({ projectId, user }: { projectId: string, user: User | n
     }, [runningJob]);
 
     const runWorkflow = async (type: string) => {
+        if (!canRun) {
+            alert("You do not have permission to run workflows.");
+            return;
+        }
         setLogs([]);
         setStatus("running");
         try {
-            const res = await fetch(`/api/projects/${projectId}/workflows`, {
+            const res = await fetchApi(`/api/projects/${projectId}/workflows`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -602,21 +584,21 @@ function WorkflowsPanel({ projectId, user }: { projectId: string, user: User | n
                     desc="Generate Schematics, Netlists, and BOMs."
                     icon={FileText}
                     onClick={() => runWorkflow("design")}
-                    disabled={status === "running"}
+                    disabled={status === "running" || !canRun}
                 />
                 <WorkflowCard
                     title="Manufacturing Outputs"
                     desc="Generate Gerbers, Drill Files, and Pick & Place."
                     icon={Box}
                     onClick={() => runWorkflow("manufacturing")}
-                    disabled={status === "running"}
+                    disabled={status === "running" || !canRun}
                 />
                 <WorkflowCard
                     title="3D Renders"
                     desc="Generate Ray-Traced Renders of the PCB."
                     icon={Box}
                     onClick={() => runWorkflow("render")}
-                    disabled={status === "running"}
+                    disabled={status === "running" || !canRun}
                 />
             </div>
 

@@ -1,11 +1,12 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.core.security import AuthenticatedUser, require_designer, require_viewer
 from app.services import folder_service, project_service
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_viewer)])
 
 
 class FolderContentsResponse(BaseModel):
@@ -39,20 +40,23 @@ def _normalize_folder_name(name: str) -> str:
 
 
 @router.get("/tree", response_model=List[folder_service.FolderTreeItem])
-async def get_folder_tree():
-    return folder_service.get_folder_tree()
+async def get_folder_tree(user: AuthenticatedUser = Depends(require_viewer)):
+    return folder_service.get_folder_tree(user.role)
 
 
 @router.get("/contents", response_model=FolderContentsResponse)
-async def get_folder_contents(folder_id: Optional[str] = Query(default=None)):
+async def get_folder_contents(
+    folder_id: Optional[str] = Query(default=None),
+    user: AuthenticatedUser = Depends(require_viewer),
+):
     try:
-        payload = folder_service.get_folder_contents(folder_id)
+        payload = folder_service.get_folder_contents(folder_id, user.role)
         return FolderContentsResponse(**payload)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error))
 
 
-@router.post("/", response_model=folder_service.Folder)
+@router.post("/", response_model=folder_service.Folder, dependencies=[Depends(require_designer)])
 async def create_folder(request: CreateFolderRequest):
     try:
         return folder_service.create_folder(
@@ -63,7 +67,7 @@ async def create_folder(request: CreateFolderRequest):
         raise HTTPException(status_code=400, detail=str(error))
 
 
-@router.patch("/{folder_id}", response_model=folder_service.Folder)
+@router.patch("/{folder_id}", response_model=folder_service.Folder, dependencies=[Depends(require_designer)])
 async def update_folder(folder_id: str, request: UpdateFolderRequest):
     field_set = request.model_fields_set
     if "name" not in field_set and "parent_id" not in field_set:
@@ -78,7 +82,7 @@ async def update_folder(folder_id: str, request: UpdateFolderRequest):
         raise HTTPException(status_code=_status_code_for_value_error(error), detail=str(error))
 
 
-@router.delete("/{folder_id}")
+@router.delete("/{folder_id}", dependencies=[Depends(require_designer)])
 async def delete_folder(folder_id: str, cascade: bool = Query(default=True)):
     try:
         deleted = folder_service.delete_folder(folder_id=folder_id, cascade=cascade)
@@ -91,7 +95,7 @@ async def delete_folder(folder_id: str, cascade: bool = Query(default=True)):
     return {"message": "Folder deleted successfully"}
 
 
-@router.post("/projects/{project_id}/move")
+@router.post("/projects/{project_id}/move", dependencies=[Depends(require_designer)])
 async def move_project_to_folder(project_id: str, request: MoveProjectRequest):
     try:
         folder_service.move_project_to_folder(project_id=project_id, folder_id=request.folder_id)

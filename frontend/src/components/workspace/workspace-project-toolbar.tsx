@@ -11,6 +11,8 @@ interface WorkspaceProjectToolbarProps {
   onCreateFolder: () => void;
   onRefresh: () => void;
   onOpenSettings: () => void;
+  canManageProjects: boolean;
+  canOpenSettings: boolean;
 }
 
 export function WorkspaceProjectToolbar({
@@ -20,6 +22,8 @@ export function WorkspaceProjectToolbar({
   onCreateFolder,
   onRefresh,
   onOpenSettings,
+  canManageProjects,
+  canOpenSettings,
 }: WorkspaceProjectToolbarProps) {
   return (
     <div className="flex flex-wrap items-center gap-2 px-4 py-3 md:h-14 md:flex-nowrap md:py-0">
@@ -43,19 +47,25 @@ export function WorkspaceProjectToolbar({
       </div>
 
       <div className="ml-auto flex items-center gap-2">
-        <Button onClick={onImport}>
-          <Plus className="mr-2 h-4 w-4" />
-          Import Project
-        </Button>
-        <Button variant="outline" size="icon" onClick={onCreateFolder} aria-label="Create new folder">
-          <FolderPlus className="h-4 w-4" />
-        </Button>
+        {canManageProjects && (
+          <>
+            <Button onClick={onImport}>
+              <Plus className="mr-2 h-4 w-4" />
+              Import Project
+            </Button>
+            <Button variant="outline" size="icon" onClick={onCreateFolder} aria-label="Create new folder">
+              <FolderPlus className="h-4 w-4" />
+            </Button>
+          </>
+        )}
         <Button variant="outline" size="icon" onClick={onRefresh} aria-label="Refresh workspace">
           <RefreshCw className="h-4 w-4" />
         </Button>
-        <Button variant="outline" size="icon" onClick={onOpenSettings} aria-label="Open settings">
-          <Settings className="h-4 w-4" />
-        </Button>
+        {canOpenSettings && (
+          <Button variant="outline" size="icon" onClick={onOpenSettings} aria-label="Open settings">
+            <Settings className="h-4 w-4" />
+          </Button>
+        )}
       </div>
     </div>
   );

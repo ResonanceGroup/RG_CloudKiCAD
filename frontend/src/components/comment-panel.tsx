@@ -12,6 +12,7 @@ interface CommentPanelProps {
     onReply: (commentId: string, content: string) => Promise<void>;
     onDelete: (commentId: string) => Promise<void>;
     onCommentClick: (comment: Comment) => void;
+    canModify: boolean;
 }
 
 export function CommentPanel({
@@ -20,7 +21,8 @@ export function CommentPanel({
     onResolve,
     onReply,
     onDelete,
-    onCommentClick
+    onCommentClick,
+    canModify
 }: CommentPanelProps) {
     const [filter, setFilter] = useState<'ALL' | 'OPEN' | 'RESOLVED'>('ALL');
 
@@ -87,6 +89,7 @@ export function CommentPanel({
                                                 onReply={onReply}
                                                 onDelete={onDelete}
                                                 onClick={() => onCommentClick(comment)}
+                                                canModify={canModify}
                                             />
                                         ))}
                                     </div>
@@ -107,6 +110,7 @@ export function CommentPanel({
                                                 onReply={onReply}
                                                 onDelete={onDelete}
                                                 onClick={() => onCommentClick(comment)}
+                                                canModify={canModify}
                                             />
                                         ))}
                                     </div>
@@ -140,9 +144,10 @@ interface CommentCardProps {
     onReply: (id: string, content: string) => Promise<void>;
     onDelete: (id: string) => Promise<void>;
     onClick: () => void;
+    canModify: boolean;
 }
 
-function CommentCard({ comment, onResolve, onReply, onDelete, onClick }: CommentCardProps) {
+function CommentCard({ comment, onResolve, onReply, onDelete, onClick, canModify }: CommentCardProps) {
     const [isReplying, setIsReplying] = useState(false);
     const [replyContent, setReplyContent] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -190,55 +195,61 @@ function CommentCard({ comment, onResolve, onReply, onDelete, onClick }: Comment
                 <p className="text-sm mb-3 whitespace-pre-wrap">{comment.content}</p>
 
                 <div className="flex items-center justify-between">
-                    <div className="flex gap-1">
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-xs"
-                            onClick={() => setIsReplying(!isReplying)}
-                        >
-                            <ReplyIcon className="w-3 h-3 mr-1" />
-                            Reply
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-xs text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                if (confirm("Are you sure you want to delete this comment?")) {
-                                    onDelete(comment.id);
-                                }
-                            }}
-                        >
-                            <Trash2 className="w-3 h-3 mr-1" />
-                            Delete
-                        </Button>
-                    </div>
+                    {canModify ? (
+                        <>
+                            <div className="flex gap-1">
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-6 px-2 text-xs"
+                                    onClick={() => setIsReplying(!isReplying)}
+                                >
+                                    <ReplyIcon className="w-3 h-3 mr-1" />
+                                    Reply
+                                </Button>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-6 px-2 text-xs text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (window.confirm("Are you sure you want to delete this comment?")) {
+                                            void onDelete(comment.id);
+                                        }
+                                    }}
+                                >
+                                    <Trash2 className="w-3 h-3 mr-1" />
+                                    Delete
+                                </Button>
+                            </div>
 
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        className={`h-6 px-2 text-xs ${isResolved ? 'text-green-600' : 'text-muted-foreground'}`}
-                        onClick={() => onResolve(comment.id, !isResolved)}
-                    >
-                        {isResolved ? (
-                            <>
-                                <CheckCircle className="w-3 h-3 mr-1" />
-                                Resolved
-                            </>
-                        ) : (
-                            <>
-                                <Circle className="w-3 h-3 mr-1" />
-                                Resolve
-                            </>
-                        )}
-                    </Button>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                className={`h-6 px-2 text-xs ${isResolved ? 'text-green-600' : 'text-muted-foreground'}`}
+                                onClick={() => onResolve(comment.id, !isResolved)}
+                            >
+                                {isResolved ? (
+                                    <>
+                                        <CheckCircle className="w-3 h-3 mr-1" />
+                                        Resolved
+                                    </>
+                                ) : (
+                                    <>
+                                        <Circle className="w-3 h-3 mr-1" />
+                                        Resolve
+                                    </>
+                                )}
+                            </Button>
+                        </>
+                    ) : (
+                        <div className="text-xs text-muted-foreground">Read-only</div>
+                    )}
                 </div>
             </div>
 
             {/* Replies Section */}
-            {(comment.replies.length > 0 || isReplying) && (
+            {(comment.replies.length > 0 || (isReplying && canModify)) && (
                 <div className="bg-muted/20 border-t p-3 space-y-3">
                     {/* Existing Replies */}
                     {comment.replies.length > 0 && (
@@ -266,7 +277,7 @@ function CommentCard({ comment, onResolve, onReply, onDelete, onClick }: Comment
                     )}
 
                     {/* Reply Input */}
-                    {isReplying && (
+                    {isReplying && canModify && (
                         <div className="flex items-end gap-2 mt-2 pt-2 animate-in fade-in slide-in-from-top-1">
                             <textarea
                                 value={replyContent}

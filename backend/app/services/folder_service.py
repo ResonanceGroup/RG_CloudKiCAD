@@ -11,11 +11,13 @@ import datetime
 import json
 import os
 import shutil
+import time
 import uuid
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.core.roles import Role, normalize_role
 from app.services import project_service
 
 
@@ -25,6 +27,8 @@ class Folder(BaseModel):
     parent_id: Optional[str] = None
     created_at: str
     updated_at: str
+    visibility_mode: Optional[str] = None
+    allowed_roles: List[str] = Field(default_factory=list)
 
 
 class FolderTreeItem(BaseModel):
@@ -35,10 +39,17 @@ class FolderTreeItem(BaseModel):
     has_children: bool = False
     direct_project_count: int = 0
     total_project_count: int = 0
+    visibility_mode: Optional[str] = None
+    allowed_roles: List[str] = Field(default_factory=list)
 
 
 FOLDERS_FILE = os.path.join(project_service.PROJECTS_ROOT, ".folders.json")
 os.makedirs(os.path.dirname(FOLDERS_FILE), exist_ok=True)
+
+FOLDERS_CACHE_TTL = 5.0
+_folders_cache: Dict[str, Folder] = {}
+_folders_cache_time: float = 0
+_folders_cache_mtime: Optional[float] = None
 
 
 def _legacy_folders_files() -> List[str]:
@@ -106,29 +117,87 @@ def _normalize_name(name: str) -> str:
     return normalized
 
 
+def _normalize_allowed_roles(roles: List[str] | None) -> List[str]:
+    if not roles:
+        return []
+    normalized: List[str] = []
+    for value in roles:
+        role = normalize_role(value)
+        if role and role not in normalized:
+            normalized.append(role)
+    return normalized
+
+
+def _is_folder_visible_to_role(folder: Folder, user_role: Optional[Role]) -> bool:
+    if user_role is None:
+        return True
+    if folder.visibility_mode != "roles":
+        return True
+    if not folder.allowed_roles:
+        return True
+    return user_role in folder.allowed_roles
+
+
 def _load_folders() -> Dict[str, Folder]:
+    global _folders_cache, _folders_cache_time, _folders_cache_mtime
     _ensure_canonical_folders_file()
+
+    current_time = time.time()
+    try:
+        current_mtime = os.path.getmtime(FOLDERS_FILE)
+    except OSError:
+        current_mtime = None
+
+    if (
+        _folders_cache
+        and (current_time - _folders_cache_time) < FOLDERS_CACHE_TTL
+        and _folders_cache_mtime == current_mtime
+    ):
+        return _folders_cache
 
     for path in _existing_folders_file_candidates():
         try:
             with open(path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
-            folders = {folder_id: Folder(**payload) for folder_id, payload in raw.items()}
+            folders: Dict[str, Folder] = {}
+            for folder_id, payload in raw.items():
+                folder = Folder(**payload)
+                folder.allowed_roles = _normalize_allowed_roles(folder.allowed_roles)
+                if folder.visibility_mode not in {None, "roles"}:
+                    folder.visibility_mode = None
+                folders[folder_id] = folder
 
             # If loaded from a legacy location, persist into canonical path once.
             if path != FOLDERS_FILE and not os.path.exists(FOLDERS_FILE):
                 _save_folders(folders)
 
+            _folders_cache = folders
+            _folders_cache_time = current_time
+            try:
+                _folders_cache_mtime = os.path.getmtime(FOLDERS_FILE)
+            except OSError:
+                _folders_cache_mtime = current_mtime
             return folders
         except (json.JSONDecodeError, IOError):
             continue
 
+    _folders_cache = {}
+    _folders_cache_time = current_time
+    _folders_cache_mtime = current_mtime
     return {}
+
+
+def invalidate_folder_cache() -> None:
+    global _folders_cache, _folders_cache_time, _folders_cache_mtime
+    _folders_cache = {}
+    _folders_cache_time = 0
+    _folders_cache_mtime = None
 
 
 def _save_folders(folders: Dict[str, Folder]) -> None:
     with open(FOLDERS_FILE, "w", encoding="utf-8") as f:
         json.dump({k: v.dict() for k, v in folders.items()}, f, indent=2)
+    invalidate_folder_cache()
 
 
 def _children_map(folders: Dict[str, Folder]) -> Dict[Optional[str], List[str]]:
@@ -156,13 +225,43 @@ def _descendant_ids(root_folder_id: str, children: Dict[Optional[str], List[str]
 
 def _project_ids_by_folder(folders: Dict[str, Folder]) -> Dict[str, List[str]]:
     by_folder: Dict[str, List[str]] = {folder_id: [] for folder_id in folders.keys()}
-    for project in project_service.get_registered_projects():
+    for project in project_service.get_registered_project_records():
         if project.folder_id and project.folder_id in by_folder:
             by_folder[project.folder_id].append(project.id)
     return by_folder
 
 
-def get_folder_tree() -> List[FolderTreeItem]:
+def is_folder_visible_to_role(folder_id: Optional[str], user_role: Optional[Role]) -> bool:
+    if folder_id is None:
+        return True
+    folders = _load_folders()
+    folder = folders.get(folder_id)
+    if not folder:
+        return False
+    return _is_folder_visible_to_role(folder, user_role)
+
+
+def filter_projects_for_role(
+    projects: List[project_service.Project],
+    user_role: Optional[Role],
+) -> List[project_service.Project]:
+    if user_role is None:
+        return projects
+
+    folders = _load_folders()
+
+    def project_visible(project: project_service.Project) -> bool:
+        if project.folder_id is None:
+            return True
+        folder = folders.get(project.folder_id)
+        if not folder:
+            return False
+        return _is_folder_visible_to_role(folder, user_role)
+
+    return [project for project in projects if project_visible(project)]
+
+
+def get_folder_tree(user_role: Optional[Role] = None) -> List[FolderTreeItem]:
     folders = _load_folders()
     if not folders:
         return []
@@ -181,6 +280,9 @@ def get_folder_tree() -> List[FolderTreeItem]:
         count = len(direct_project_ids.get(folder_id, []))
         active_stack.add(folder_id)
         for child_id in children.get(folder_id, []):
+            child = folders.get(child_id)
+            if not child or not _is_folder_visible_to_role(child, user_role):
+                continue
             count += total_count(child_id, active_stack)
         active_stack.remove(folder_id)
         total_cache[folder_id] = count
@@ -193,17 +295,25 @@ def get_folder_tree() -> List[FolderTreeItem]:
         for folder_id in children.get(parent_id, []):
             if folder_id in active_stack:
                 continue
-            active_stack.add(folder_id)
             folder = folders[folder_id]
+            if not _is_folder_visible_to_role(folder, user_role):
+                continue
+            active_stack.add(folder_id)
             tree_items.append(
                 FolderTreeItem(
                     id=folder.id,
                     name=folder.name,
                     parent_id=folder.parent_id,
                     depth=depth,
-                    has_children=folder_id in children,
+                    has_children=any(
+                        (child := folders.get(child_id)) is not None
+                        and _is_folder_visible_to_role(child, user_role)
+                        for child_id in children.get(folder_id, [])
+                    ),
                     direct_project_count=len(direct_project_ids.get(folder_id, [])),
                     total_project_count=total_count(folder_id),
+                    visibility_mode=folder.visibility_mode,
+                    allowed_roles=folder.allowed_roles,
                 )
             )
             walk(folder_id, depth + 1, active_stack)
@@ -239,6 +349,8 @@ def create_folder(name: str, parent_id: Optional[str] = None) -> Folder:
         parent_id=parent_id,
         created_at=now,
         updated_at=now,
+        visibility_mode=None,
+        allowed_roles=[],
     )
     folders[folder.id] = folder
     _save_folders(folders)
@@ -289,7 +401,7 @@ def delete_folder(folder_id: str, cascade: bool = True) -> bool:
         raise ValueError("Folder has subfolders. Use cascade delete or move subfolders first.")
 
     # Move all projects under deleted folders back to root.
-    for project in project_service.get_registered_projects():
+    for project in project_service.get_registered_project_records():
         if project.folder_id in delete_ids:
             project_service.update_project_folder_id(project.id, None)
 
@@ -307,17 +419,34 @@ def move_project_to_folder(project_id: str, folder_id: Optional[str]) -> None:
         raise ValueError("Project not found")
 
 
-def get_folder_contents(folder_id: Optional[str]) -> dict:
+def get_folder_contents(folder_id: Optional[str], user_role: Optional[Role] = None) -> dict:
     folders = _load_folders()
-    if folder_id is not None and folder_id not in folders:
-        raise ValueError("Folder not found")
+    if folder_id is not None:
+        folder = folders.get(folder_id)
+        if folder is None or not _is_folder_visible_to_role(folder, user_role):
+            raise ValueError("Folder not found")
 
     children = sorted(
-        [folder for folder in folders.values() if folder.parent_id == folder_id],
+        [
+            folder
+            for folder in folders.values()
+            if folder.parent_id == folder_id and _is_folder_visible_to_role(folder, user_role)
+        ],
         key=lambda folder: folder.name.lower(),
     )
     projects = sorted(
-        [project for project in project_service.get_registered_projects() if project.folder_id == folder_id],
+        [
+            project
+            for project in project_service.get_registered_projects()
+            if project.folder_id == folder_id
+            and (
+                folder_id is None
+                or (
+                    (folder := folders.get(project.folder_id)) is not None
+                    and _is_folder_visible_to_role(folder, user_role)
+                )
+            )
+        ],
         key=lambda project: (project.display_name or project.name).lower(),
     )
 

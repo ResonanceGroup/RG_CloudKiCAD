@@ -18,6 +18,7 @@ interface WorkspaceListViewProps {
   onDeleteFolder: (folder: FolderTreeItem) => void;
   onMoveProject: (project: Project) => void;
   onDeleteProject: (project: Project) => void;
+  canManageProjects: boolean;
 }
 
 function resolveProjectLocation(
@@ -50,6 +51,7 @@ export function WorkspaceListView({
   onDeleteFolder,
   onMoveProject,
   onDeleteProject,
+  canManageProjects,
 }: WorkspaceListViewProps) {
   return (
     <div className="overflow-hidden rounded-xl border">
@@ -82,7 +84,12 @@ export function WorkspaceListView({
               <p className="truncate text-sm text-muted-foreground">Current Level</p>
               <p className="truncate text-sm text-muted-foreground">-</p>
               <div className="flex justify-end">
-                <FolderActionMenu folder={folder} onRename={onRenameFolder} onDelete={onDeleteFolder} />
+                <FolderActionMenu
+                  folder={folder}
+                  onRename={onRenameFolder}
+                  onDelete={onDeleteFolder}
+                  canManage={canManageProjects}
+                />
               </div>
             </div>
           ))}
@@ -110,6 +117,7 @@ export function WorkspaceListView({
                   projectName={getProjectDisplayName(project)}
                   onMove={onMoveProject}
                   onDelete={onDeleteProject}
+                  canManage={canManageProjects}
                 />
               </div>
             </div>

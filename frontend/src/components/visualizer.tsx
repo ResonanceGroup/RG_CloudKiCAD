@@ -7,6 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { CommentOverlay } from "./comment-overlay";
 import { CommentForm } from "./comment-form";
 import { CommentPanel } from "./comment-panel";
+import { fetchApi } from "@/lib/api";
 import type { User } from "@/types/auth";
 import type { Comment, CommentContext } from "@/types/comments";
 import type {
@@ -100,6 +101,7 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
     const [commentsSourceUrls, setCommentsSourceUrls] = useState<CommentsSourceUrls | null>(null);
     const [isUrlsPopoverOpen, setIsUrlsPopoverOpen] = useState(false);
     const [copiedField, setCopiedField] = useState<string | null>(null);
+    const canModifyComments = user?.role === "admin" || user?.role === "designer";
     const lastCrossProbeRef = useRef<Record<CrossProbeContext, string | null>>({
         SCH: null,
         PCB: null,
@@ -523,6 +525,9 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
         if (!schematicViewer && !pcbViewer) return;
 
         const handleCommentClick = (e: CustomEvent) => {
+            if (!canModifyComments) {
+                return;
+            }
             if (activeCommentContext !== "SCH" && activeCommentContext !== "PCB") {
                 return;
             }
@@ -564,10 +569,13 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                 pcbViewer.removeEventListener("kicanvas:sheet:loaded", handleSheetLoad as EventListener);
             }
         };
-    }, [activeCommentContext, schematicViewerElement, pcbViewerElement]);
+    }, [activeCommentContext, canModifyComments, schematicViewerElement, pcbViewerElement]);
 
     // Toggle Comment Mode
     const toggleCommentMode = () => {
+        if (!canModifyComments) {
+            return;
+        }
         setCommentMode((previous) => {
             const next = !previous;
             applyCommentModeToViewer(schematicViewerRef.current, next);
@@ -641,11 +649,11 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
 
     // Submit Comment
     const handleSubmitComment = async (content: string) => {
-        if (!pendingLocation) return;
+        if (!pendingLocation || !canModifyComments) return;
         setIsSubmittingComment(true);
         try {
             const location = { ...pendingLocation, page: pendingContext === "SCH" ? activePage : "" };
-            const response = await fetch(`/api/projects/${projectId}/comments`, {
+            const response = await fetchApi(`/api/projects/${projectId}/comments`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -694,7 +702,8 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
 
     // Resolving/Replying
     const handleResolveComment = async (commentId: string, resolved: boolean) => {
-        const response = await fetch(`/api/projects/${projectId}/comments/${commentId}`, {
+        if (!canModifyComments) return;
+        const response = await fetchApi(`/api/projects/${projectId}/comments/${commentId}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ status: resolved ? "RESOLVED" : "OPEN" })
@@ -706,7 +715,8 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
     };
 
     const handleReplyComment = async (commentId: string, content: string) => {
-        const response = await fetch(`/api/projects/${projectId}/comments/${commentId}/replies`, {
+        if (!canModifyComments) return;
+        const response = await fetchApi(`/api/projects/${projectId}/comments/${commentId}/replies`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -721,8 +731,9 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
     };
 
     const handleDeleteComment = async (commentId: string) => {
+        if (!canModifyComments) return;
         try {
-            const response = await fetch(`/api/projects/${projectId}/comments/${commentId}`, {
+            const response = await fetchApi(`/api/projects/${projectId}/comments/${commentId}`, {
                 method: "DELETE",
             });
             if (response.ok) {
@@ -735,11 +746,12 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
 
     // Export comments.json artifact from DB snapshot
     const handlePushComments = async () => {
+        if (!canModifyComments) return;
         setIsPushingComments(true);
         setPushMessage(null);
 
         try {
-            const response = await fetch(`/api/projects/${projectId}/comments/push`, {
+            const response = await fetchApi(`/api/projects/${projectId}/comments/push`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({}),
@@ -888,6 +900,7 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                             variant={commentMode ? "default" : "ghost"}
                             size="sm"
                             onClick={toggleCommentMode}
+                            disabled={!canModifyComments}
                             className={`text-xs h-8 ${commentMode ? "bg-amber-600 text-white hover:bg-amber-700" : ""}`}
                         >
                             <MessageSquarePlus className="w-3 h-3 mr-2" />
@@ -905,16 +918,18 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                                 {comments.length}
                             </span>
                         </Button>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setShowPushDialog(true)}
-                            className="text-xs h-8 ml-1"
-                            title="Generate comments.json artifact from DB"
-                        >
-                            <GitBranch className="w-3 h-3 mr-2" />
-                            Generate JSON
-                        </Button>
+                        {canModifyComments && (
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setShowPushDialog(true)}
+                                className="text-xs h-8 ml-1"
+                                title="Generate comments.json artifact from DB"
+                            >
+                                <GitBranch className="w-3 h-3 mr-2" />
+                                Generate JSON
+                            </Button>
+                        )}
                     </>
                 )}
             </div>
@@ -1049,6 +1064,7 @@ export function Visualizer({ projectId, user }: VisualizerProps) {
                             onReply={handleReplyComment}
                             onDelete={handleDeleteComment}
                             onCommentClick={handleCommentNavigate}
+                            canModify={canModifyComments}
                         />
                     </div>
                 )}
