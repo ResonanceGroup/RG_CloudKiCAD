@@ -20,7 +20,7 @@ KiCAD Prism is a web platform for browsing, reviewing, and operating on KiCad re
 
 ### Project Exploration
 
-- Native schematic and PCB viewing in the browser.
+- Native schematic and PCB viewing in the browser with cross-probe support.
 - 3D board viewing and Interactive HTML BOM integration.
 - Markdown README and project docs browsing.
 - Design outputs and manufacturing outputs browsing and download.
