@@ -89,12 +89,15 @@ def _save_project_registry(registry: Dict[str, dict]) -> None:
 
 
 def invalidate_project_caches() -> None:
+    from app.services import project_properties_service
+
     global _project_records_cache, _project_records_cache_time
     global _projects_cache, _projects_cache_time
     _project_records_cache = []
     _project_records_cache_time = 0
     _projects_cache = []
     _projects_cache_time = 0
+    project_properties_service.invalidate_project_properties_cache()
 
 def register_project(project_id: str, name: str, path: str, repo_url: str,
                      sub_path: Optional[str] = None, parent_repo: Optional[str] = None,

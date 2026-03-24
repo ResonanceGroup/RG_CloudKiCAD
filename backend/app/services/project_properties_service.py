@@ -1,10 +1,13 @@
+from copy import deepcopy
 import math
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 
 _STRING_PATTERN = r'"((?:[^"\\]|\\.)*)"'
+_FILE_METADATA_CACHE_MAX_ENTRIES = 128
+_file_metadata_cache: dict[tuple[str, str], dict[str, object]] = {}
 
 
 def _unescape_kicad_string(value: str) -> str:
@@ -188,11 +191,54 @@ def _parse_title_block(text: str) -> Optional[dict]:
     }
 
 
-def _extract_common_file_metadata(project_path: str, file_path: Optional[str]) -> Optional[dict]:
+def invalidate_project_properties_cache(project_path: Optional[str] = None) -> None:
+    global _file_metadata_cache
+
+    if project_path is None:
+        _file_metadata_cache = {}
+        return
+
+    resolved_project = str(Path(project_path).resolve())
+    _file_metadata_cache = {
+        key: value
+        for key, value in _file_metadata_cache.items()
+        if key[0] != resolved_project
+    }
+
+
+def _trim_file_metadata_cache() -> None:
+    while len(_file_metadata_cache) > _FILE_METADATA_CACHE_MAX_ENTRIES:
+        oldest_key = next(iter(_file_metadata_cache))
+        _file_metadata_cache.pop(oldest_key, None)
+
+
+def _load_cached_file_metadata(
+    project_path: str,
+    file_path: Optional[str],
+    parser: Callable[[str, str, str], dict],
+) -> Optional[dict]:
     if not file_path:
         return None
 
     path = Path(file_path)
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+
+    resolved_project = str(Path(project_path).resolve())
+    resolved_file = str(path.resolve())
+    cache_key = (resolved_project, resolved_file)
+    cached = _file_metadata_cache.get(cache_key)
+
+    if (
+        cached
+        and cached.get("mtime_ns") == stat.st_mtime_ns
+        and cached.get("size") == stat.st_size
+    ):
+        metadata = cached.get("metadata")
+        return deepcopy(metadata) if isinstance(metadata, dict) else None
+
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
@@ -203,46 +249,46 @@ def _extract_common_file_metadata(project_path: str, file_path: Optional[str]) -
     except ValueError:
         relative_path = path.name
 
-    return {
-        "path": relative_path,
-        "filename": path.name,
-        "text": text,
+    metadata = parser(text, relative_path, path.name)
+    _file_metadata_cache[cache_key] = {
+        "mtime_ns": stat.st_mtime_ns,
+        "size": stat.st_size,
+        "metadata": deepcopy(metadata),
     }
+    _trim_file_metadata_cache()
+    return metadata
 
 
 def extract_schematic_metadata(project_path: str, file_path: Optional[str]) -> Optional[dict]:
-    common = _extract_common_file_metadata(project_path, file_path)
-    if not common:
-        return None
-
-    text = common.pop("text")
-
-    return {
-        **common,
-        "version": _extract_int_value(text, "version"),
-        "generator": _extract_string_value(text, "generator"),
-        "generator_version": _extract_string_value(text, "generator_version"),
-        "paper": _extract_string_value(text, "paper"),
-        "uuid": _extract_string_value(text, "uuid"),
-        "title_block": _parse_title_block(text),
-    }
+    return _load_cached_file_metadata(
+        project_path,
+        file_path,
+        lambda text, relative_path, filename: {
+            "path": relative_path,
+            "filename": filename,
+            "version": _extract_int_value(text, "version"),
+            "generator": _extract_string_value(text, "generator"),
+            "generator_version": _extract_string_value(text, "generator_version"),
+            "paper": _extract_string_value(text, "paper"),
+            "uuid": _extract_string_value(text, "uuid"),
+            "title_block": _parse_title_block(text),
+        },
+    )
 
 
 def extract_pcb_metadata(project_path: str, file_path: Optional[str]) -> Optional[dict]:
-    common = _extract_common_file_metadata(project_path, file_path)
-    if not common:
-        return None
-
-    text = common.pop("text")
-    general_block = _extract_sexpr_block(text, "general") or ""
-
-    return {
-        **common,
-        "version": _extract_int_value(text, "version"),
-        "generator": _extract_string_value(text, "generator"),
-        "generator_version": _extract_string_value(text, "generator_version"),
-        "paper": _extract_string_value(text, "paper"),
-        "dimensions_mm": _extract_pcb_dimensions(text),
-        "thickness_mm": _extract_number_value(general_block, "thickness"),
-        "title_block": _parse_title_block(text),
-    }
+    return _load_cached_file_metadata(
+        project_path,
+        file_path,
+        lambda text, relative_path, filename: {
+            "path": relative_path,
+            "filename": filename,
+            "version": _extract_int_value(text, "version"),
+            "generator": _extract_string_value(text, "generator"),
+            "generator_version": _extract_string_value(text, "generator_version"),
+            "paper": _extract_string_value(text, "paper"),
+            "dimensions_mm": _extract_pcb_dimensions(text),
+            "thickness_mm": _extract_number_value(_extract_sexpr_block(text, "general") or "", "thickness"),
+            "title_block": _parse_title_block(text),
+        },
+    )
