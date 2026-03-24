@@ -21,6 +21,7 @@ class Project(BaseModel):
     description: str
     path: str
     last_modified: str
+    registered_at: Optional[str] = None
     thumbnail_url: Optional[str] = None
     sub_path: Optional[str] = None  # Relative path within parent repo
     parent_repo: Optional[str] = None  # Parent monorepo name
@@ -37,6 +38,7 @@ class RegisteredProjectRecord(BaseModel):
     path: str
     description: str
     last_modified: str
+    registered_at: Optional[str] = None
     sub_path: Optional[str] = None
     parent_repo: Optional[str] = None
     repo_url: Optional[str] = None
@@ -248,6 +250,7 @@ def _record_to_project(record: RegisteredProjectRecord) -> Project:
         description=custom_description or record.description,
         path=record.path,
         last_modified=record.last_modified,
+        registered_at=record.registered_at,
         thumbnail_url=f"/api/projects/{record.id}/thumbnail" if thumbnail_path else None,
         sub_path=record.sub_path,
         parent_repo=record.parent_repo,
@@ -283,6 +286,7 @@ def get_registered_project_records() -> List[RegisteredProjectRecord]:
                 path=normalized_path,
                 description=data.get("description", f"Project {data['name']}"),
                 last_modified=_record_last_modified(normalized_path, data.get("last_modified", "Unknown")),
+                registered_at=data.get("registered_at"),
                 sub_path=data.get("sub_path"),
                 parent_repo=data.get("parent_repo"),
                 repo_url=data.get("repo_url"),
