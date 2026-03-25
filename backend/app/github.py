@@ -26,6 +26,10 @@ async def get_github_client(token: str) -> httpx.AsyncClient:
     """Return a pre-configured :class:`httpx.AsyncClient` with the GitHub
     ``Authorization`` header set.
 
+    The token stored here is issued by the Organization-owned OAuth App, so it
+    carries the permissions granted to that app (including access to private
+    org repositories) without requiring additional configuration.
+
     The caller is responsible for closing the client (use as an async context
     manager)::
 
