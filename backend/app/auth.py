@@ -325,6 +325,9 @@ auth_backend = AuthenticationBackend(
 # ---------------------------------------------------------------------------
 # GitHub OAuth2 client
 # ---------------------------------------------------------------------------
+# This uses a GitHub Organization-owned OAuth App (recommended).
+# Create it at: https://github.com/organizations/YOUR_ORG/settings/applications/new
+# The consent screen will show your organization's name and branding.
 
 github_oauth_client = GitHubOAuth2(
     client_id=settings.GITHUB_CLIENT_ID,
