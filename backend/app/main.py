@@ -1,13 +1,19 @@
-import subprocess
-import os
-from pathlib import Path
-from contextlib import asynccontextmanager
-
 import logging
+import os
+import subprocess
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.auth import router as auth_router
+from app.api.comments import router as comments_router
+from app.api.diff import router as diff_router
+from app.api.folders import router as folders_router
+from app.api.projects import router as projects_router
+from app.api.settings import router as settings_router
+from app.api.workspace import router as workspace_router
 from app.auth import (
     UserCreate,
     UserRead,
@@ -15,17 +21,10 @@ from app.auth import (
     fastapi_users_instance,
     github_oauth_client,
 )
-from app.api.auth import router as auth_router
-from app.api.projects import router as projects_router
-from app.api.comments import router as comments_router
-from app.api.diff import router as diff_router
-from app.api.folders import router as folders_router
-from app.api.settings import router as settings_router
-from app.api.workspace import router as workspace_router
+from app.core.config import settings
 from app.db.db import engine
 from app.db.models import Base
 from app.services.comments_store_service import initialize_comments_store
-from app.core.config import settings
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
