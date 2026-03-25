@@ -10,6 +10,8 @@ services:
       - ./data/projects:/app/projects
       # Mount SSH directory for Git persistence (GitLab/GitHub SSH)
       - ./data/ssh:/root/.ssh:rw
+      # Persist user database
+      - ./data/users.db:/app/users.db
     environment:
       - PYTHONUNBUFFERED=1
       # Root directory for storing projects
@@ -31,6 +33,12 @@ services:
       - DEV_MODE=false
       # GitHub Token for private repository access (optional)
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      # GitHub OAuth for org-scoped login
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - GITHUB_ORG_LOGIN=${GITHUB_ORG_LOGIN:-}
+      # Encryption key for stored OAuth tokens (required when GitHub OAuth is enabled)
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY:-}
 
   frontend:
     build: ./frontend

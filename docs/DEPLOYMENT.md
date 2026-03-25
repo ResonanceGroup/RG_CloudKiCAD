@@ -141,6 +141,40 @@ Behavior:
 - auth is effectively disabled because the backend only enables auth when `AUTH_ENABLED=true`, `GOOGLE_CLIENT_ID` is set, and `DEV_MODE=false`
 - this is convenient for local backend/frontend development
 
+## GitHub + Email Login Setup
+
+KiCAD Prism supports GitHub OAuth and email/SMTP as additional authentication providers. Configure the variables from the `.env.example` sections **GitHub OAuth** and **Email / SMTP** in your root `.env`.
+
+### GitHub Organization Repo Access
+
+When users log in with GitHub, the app requests the `repo` scope. This gives KiCAD Prism read (and write) access to the repositories the authenticated user can see inside your GitHub organization.
+
+In the GitHub OAuth App settings:
+- Callback URL must be: `http://your-server:8000/api/auth/github/callback`
+- The login flow will show the user: "KiCAD Prism wants to read and write your repositories" (this is required by GitHub for private/org repos).
+
+Future features (already prepared):
+- Auto-import KiCad projects from your org's repositories
+- Direct GitHub API calls using the stored token
+
+Required env variables:
+
+```env
+GITHUB_CLIENT_ID=your-github-oauth-app-client-id
+GITHUB_CLIENT_SECRET=your-github-oauth-app-client-secret
+GITHUB_ORG_LOGIN=yourcompany        # leave empty to allow any GitHub user
+TOKEN_ENCRYPTION_KEY=replace-with-a-32-byte-base64-secret
+```
+
+Generate a `TOKEN_ENCRYPTION_KEY` with:
+
+```bash
+python3 - <<'PY'
+import secrets, base64
+print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())
+PY
+```
+
 ## Google OAuth Setup
 
 Create a Google OAuth client of type "Web application" and add the frontend origins you actually use.
