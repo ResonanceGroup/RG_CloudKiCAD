@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     )
     
     # ===========================================
-    # GitHub OAuth (Coder-style org restriction)
+    # GitHub OAuth (Coder-style org restriction + repo read access)
     # ===========================================
     GITHUB_CLIENT_ID: str = Field(
         default="",
@@ -110,6 +110,20 @@ class Settings(BaseSettings):
     GITHUB_ORG_LOGIN: str = Field(
         default="",
         description="GitHub organization slug; only members may log in (e.g. 'yourcompany')."
+    )
+
+    # OAuth scopes requested during GitHub login.
+    # 'repo' grants read access to repositories; 'read:org' allows org membership checks.
+    GITHUB_SCOPES: str = Field(
+        default="repo,read:org",
+        description="Comma-separated GitHub OAuth scopes (e.g. 'repo,read:org')."
+    )
+
+    # Encryption key for storing GitHub access tokens securely.
+    # Generate with: python -c 'import secrets; print(secrets.token_urlsafe(32))'
+    TOKEN_ENCRYPTION_KEY: str = Field(
+        default="",
+        description="Secret key used to encrypt stored GitHub access tokens."
     )
 
     # ===========================================
