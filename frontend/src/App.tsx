@@ -4,10 +4,19 @@ import type { User, AuthConfig } from './types/auth';
 import { Button } from '@/components/ui/button';
 import { Toaster, toast } from 'sonner';
 import { Input } from '@/components/ui/input';
-import { Search, Bell, Github, LogOut, CheckCircle2, AlertCircle, Settings } from 'lucide-react';
+import { Search, Bell, Github, LogOut, CheckCircle2, AlertCircle, Settings, AtSign } from 'lucide-react';
 import { ApiHttpError, fetchApi, fetchJson } from '@/lib/api';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Badge } from '@/components/ui/badge';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
 import prismLogoMark from './assets/branding/kicad-prism/kicad-prism-icon.svg';
 
 const LoginPage = lazy(() =>
@@ -56,6 +65,93 @@ interface PendingAccessRequest {
     user_email: string;
     requested_role: string;
     requested_at: string;
+}
+
+function UsernameSetupDialog({
+    user,
+    onUserUpdate,
+}: {
+    user: User;
+    onUserUpdate: (u: User) => void;
+}) {
+    const [value, setValue] = useState(
+        // Pre-fill with the GitHub username as a suggestion when there's a
+        // conflict (github_username is set but username is still null).
+        user.github_username ?? ''
+    );
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const isConflict = Boolean(user.github_username && !user.username);
+    const isOpen = !user.username;
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        const username = value.trim();
+        if (!username) return;
+        setSaving(true);
+        setError(null);
+        try {
+            const updated = await fetchJson<User>('/api/auth/profile', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username }),
+            });
+            onUserUpdate(updated);
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : 'Failed to save username';
+            setError(msg);
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    return (
+        <Dialog open={isOpen}>
+            <DialogContent
+                className="sm:max-w-md"
+                onInteractOutside={(e) => e.preventDefault()}
+                onEscapeKeyDown={(e) => e.preventDefault()}
+            >
+                <DialogHeader>
+                    <DialogTitle>Choose a username</DialogTitle>
+                    <DialogDescription>
+                        {isConflict
+                            ? `The GitHub username "@${user.github_username}" is already taken. Please choose a different username for this app.`
+                            : 'Set a unique username for your account. It will be used for @mentions.'}
+                    </DialogDescription>
+                </DialogHeader>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <div className="space-y-1.5">
+                        <Label htmlFor="username-setup-input">Username</Label>
+                        <div className="relative">
+                            <AtSign className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                            <Input
+                                id="username-setup-input"
+                                className="pl-9"
+                                placeholder="your-username"
+                                value={value}
+                                onChange={(e) => { setValue(e.target.value); setError(null); }}
+                                minLength={3}
+                                maxLength={50}
+                                required
+                                autoFocus
+                            />
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                            3–50 characters. Letters, numbers, underscores, hyphens, and dots only.
+                        </p>
+                        {error && <p className="text-xs text-destructive">{error}</p>}
+                    </div>
+                    <DialogFooter>
+                        <Button type="submit" disabled={saving || !value.trim()} className="w-full">
+                            {saving ? 'Saving…' : 'Save username'}
+                        </Button>
+                    </DialogFooter>
+                </form>
+            </DialogContent>
+        </Dialog>
+    );
 }
 
 function App() {
@@ -301,6 +397,10 @@ function App() {
     return (
         <BrowserRouter>
             <Toaster richColors position="top-right" />
+            {/* Prompt any authenticated non-guest user to set a username if they don't have one */}
+            {user && user.email !== 'guest@local' && !user.username && (
+                <UsernameSetupDialog user={user} onUserUpdate={setUser} />
+            )}
             <Routes>
                 <Route path="/" element={
                     <div className="min-h-screen bg-background text-foreground">

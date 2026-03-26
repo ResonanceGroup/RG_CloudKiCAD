@@ -12,7 +12,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from google.oauth2 import id_token
 from google.auth.transport import requests
 from app.core.config import settings
@@ -48,6 +48,7 @@ class UserSession(BaseModel):
     username: Optional[str] = None
     notification_email: Optional[str] = None
     has_password: bool = False
+    github_username: Optional[str] = None
 
 
 class AuthConfig(BaseModel):
@@ -222,6 +223,7 @@ async def get_current_session_user(
     username: Optional[str] = None
     notification_email: Optional[str] = None
     has_password = False
+    github_username: Optional[str] = None
     try:
         result = await session.execute(
             select(UserModel).where(UserModel.email == user.email.lower())
@@ -230,6 +232,7 @@ async def get_current_session_user(
         if db_user:
             username = db_user.username
             notification_email = db_user.notification_email
+            github_username = db_user.github_username
             # A user has a usable password when hashed_password is set and is not
             # the fastapi-users "unusable password" sentinel ("!").
             has_password = bool(db_user.hashed_password and db_user.hashed_password != "!")
@@ -248,6 +251,7 @@ async def get_current_session_user(
         username=username,
         notification_email=notification_email,
         has_password=has_password,
+        github_username=github_username,
     )
 
 
@@ -374,7 +378,7 @@ async def update_profile(
         # Check uniqueness (case-insensitive)
         existing = await session.execute(
             select(UserModel).where(
-                UserModel.username == username,
+                func.lower(UserModel.username) == username.lower(),
                 UserModel.email != user.email.lower(),
             )
         )

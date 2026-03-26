@@ -41,6 +41,12 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
         String(254), nullable=True, default=None, unique=True
     )
 
+    # GitHub login (username) for the linked GitHub account, if any.
+    # Stored so the frontend can suggest it when there is a username conflict.
+    github_username: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True, default=None
+    )
+
     oauth_accounts: Mapped[list["OAuthAccount"]] = relationship(
         "OAuthAccount", lazy="joined"
     )

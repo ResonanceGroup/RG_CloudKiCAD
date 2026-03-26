@@ -1,6 +1,6 @@
 import { GoogleLogin, GoogleOAuthProvider, type CredentialResponse } from "@react-oauth/google";
 import { useEffect, useState } from "react";
-import { Binary, Github, Loader2, Mail } from "lucide-react";
+import { AtSign, Binary, Github, Loader2, Mail } from "lucide-react";
 import { Tabs as TabsPrimitive } from "radix-ui";
 
 import prismLogoHorizontal from "@/assets/branding/kicad-prism/kicad-prism-logo-horizontal.svg";
@@ -48,6 +48,7 @@ export function LoginPage({
   const [emailView, setEmailView] = useState<EmailView>("signin");
   const [emailValue, setEmailValue] = useState("");
   const [passwordValue, setPasswordValue] = useState("");
+  const [usernameValue, setUsernameValue] = useState("");
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   // Track OAuth (Google/GitHub) loading separately from email form loading
   const [isOAuthLoading, setIsOAuthLoading] = useState(false);
@@ -214,7 +215,7 @@ export function LoginPage({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ email: emailValue, password: passwordValue }),
+        body: JSON.stringify({ email: emailValue, password: passwordValue, username: usernameValue.trim() || undefined }),
       });
 
       if (!response.ok) {
@@ -324,6 +325,27 @@ export function LoginPage({
 
       {emailView === "signup" && (
         <form onSubmit={handleEmailSignUp} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="signup-username-input">Username</Label>
+            <div className="relative">
+              <AtSign className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                id="signup-username-input"
+                className="pl-9"
+                placeholder="your-username"
+                value={usernameValue}
+                onChange={(e) => setUsernameValue(e.target.value)}
+                required
+                minLength={3}
+                maxLength={50}
+                pattern="[a-zA-Z0-9_.-]{3,50}"
+                autoComplete="username"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              3–50 characters. Used for @mentions. Letters, numbers, underscores, hyphens, and dots only.
+            </p>
+          </div>
           <div className="space-y-1.5">
             <Label htmlFor="signup-email-input">Email</Label>
             <Input
