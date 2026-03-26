@@ -109,6 +109,32 @@ def ensure_ssh_dir():
     except OSError as error:
         logger.error("Failed to configure SSH directory: %s", error)
 
+async def _migrate_user_profile_columns() -> None:
+    """Add new profile columns to the user table when upgrading from older schema.
+
+    SQLAlchemy's create_all() only creates missing *tables*, not missing
+    *columns* in existing tables.  This function runs idempotent ALTER TABLE
+    statements so that existing databases gain the new columns on the next
+    server start without requiring a full Alembic migration.
+    """
+    from sqlalchemy import text
+
+    new_columns = [
+        ("username", "VARCHAR(50)"),
+        ("display_name", "VARCHAR(100)"),
+        ("notification_email", "VARCHAR(254)"),
+    ]
+    async with engine.begin() as conn:
+        for col_name, col_type in new_columns:
+            try:
+                # col_name and col_type come from the hardcoded list above (no user input),
+                # so this f-string is safe from SQL injection.
+                await conn.execute(text(f"ALTER TABLE user ADD COLUMN {col_name} {col_type}"))
+                logger.info("DB migration: added column '%s' to user table", col_name)
+            except Exception:
+                pass  # Column already exists — this is the expected path after the first run
+
+
 async def ensure_admin_user() -> None:
     """Auto-create the bootstrap admin account on first startup.
 
@@ -148,6 +174,7 @@ async def lifespan(app: FastAPI):
     # Startup
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _migrate_user_profile_columns()
     configure_git()
     ensure_ssh_dir()
     initialize_comments_store()

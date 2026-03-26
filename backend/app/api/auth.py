@@ -4,6 +4,7 @@ Authentication API endpoints.
 Handles Google OAuth login and domain validation.
 """
 import logging
+import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -44,6 +45,9 @@ class UserSession(BaseModel):
     picture: str = ""
     role: Role
     github_connected: bool = False
+    username: Optional[str] = None
+    notification_email: Optional[str] = None
+    has_password: bool = False
 
 
 class AuthConfig(BaseModel):
@@ -55,6 +59,29 @@ class AuthConfig(BaseModel):
     workspace_name: str
     providers: list[str]
     github_app_configured: bool
+
+
+# ---------------------------------------------------------------------------
+# Profile update schemas
+# ---------------------------------------------------------------------------
+
+_USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.\-]{3,50}$")
+
+
+class UpdateProfileRequest(BaseModel):
+    """Request body for profile update."""
+    username: Optional[str] = Field(default=None, min_length=3, max_length=50)
+    display_name: Optional[str] = Field(default=None, max_length=100)
+
+
+class SetNotificationEmailRequest(BaseModel):
+    """Request body for setting a notification/secondary email."""
+    email: str = Field(min_length=3, max_length=254)
+
+
+class SetPasswordRequest(BaseModel):
+    """Request body for setting a password on an OAuth-only account."""
+    password: str = Field(min_length=8)
 
 
 def _guest_user_session() -> UserSession:
@@ -192,18 +219,25 @@ async def get_current_session_user(
     """Return the current user's session info, including GitHub connection status."""
     # Check whether the user has a linked GitHub OAuth account in the database
     github_connected = False
+    username: Optional[str] = None
+    notification_email: Optional[str] = None
+    has_password = False
     try:
         result = await session.execute(
-            select(OAuthAccount)
-            .join(UserModel, OAuthAccount.user_id == UserModel.id)
-            .where(
-                UserModel.email == user.email.lower(),
-                OAuthAccount.oauth_name == "github",
-            )
+            select(UserModel).where(UserModel.email == user.email.lower())
         )
-        github_connected = result.scalar_one_or_none() is not None
+        db_user = result.unique().scalar_one_or_none()
+        if db_user:
+            username = db_user.username
+            notification_email = db_user.notification_email
+            # A user has a usable password when hashed_password is set and is not
+            # the fastapi-users "unusable password" sentinel ("!").
+            has_password = bool(db_user.hashed_password and db_user.hashed_password != "!")
+            github_connected = any(
+                acc.oauth_name == "github" for acc in (db_user.oauth_accounts or [])
+            )
     except Exception:
-        pass  # Non-fatal — fall back to github_connected=False
+        pass  # Non-fatal — fall back to defaults
 
     return UserSession(
         email=user.email,
@@ -211,6 +245,9 @@ async def get_current_session_user(
         picture=user.picture,
         role=user.role,
         github_connected=github_connected,
+        username=username,
+        notification_email=notification_email,
+        has_password=has_password,
     )
 
 
@@ -302,3 +339,180 @@ async def list_users(
     """Return all workspace users with their UAC role. Requires authentication."""
     assignments = access_service.list_role_assignments()
     return [{"email": a["email"], "role": a["role"]} for a in assignments]
+
+
+# ---------------------------------------------------------------------------
+# User profile endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/profile", response_model=UserSession)
+async def get_profile(
+    user: AuthenticatedUser = Depends(get_current_user),
+    session=Depends(get_async_session),
+):
+    """Return the full profile for the currently authenticated user."""
+    return await get_current_session_user(user=user, session=session)
+
+
+@router.patch("/profile", response_model=UserSession)
+async def update_profile(
+    body: UpdateProfileRequest,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session=Depends(get_async_session),
+):
+    """Update the current user's username and/or display name."""
+    username = body.username
+    display_name = body.display_name
+
+    # Validate username format
+    if username is not None:
+        if not _USERNAME_RE.match(username):
+            raise HTTPException(
+                status_code=422,
+                detail="Username must be 3–50 characters and contain only letters, numbers, underscores, hyphens, or dots.",
+            )
+        # Check uniqueness (case-insensitive)
+        existing = await session.execute(
+            select(UserModel).where(
+                UserModel.username == username,
+                UserModel.email != user.email.lower(),
+            )
+        )
+        if existing.unique().scalar_one_or_none() is not None:
+            raise HTTPException(status_code=409, detail="Username is already taken.")
+
+    result = await session.execute(
+        select(UserModel).where(UserModel.email == user.email.lower())
+    )
+    db_user = result.unique().scalar_one_or_none()
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    if username is not None:
+        db_user.username = username
+    if display_name is not None:
+        db_user.display_name = display_name if display_name.strip() else None
+    await session.commit()
+    await session.refresh(db_user)
+
+    return await get_current_session_user(user=user, session=session)
+
+
+@router.post("/profile/notification-email", response_model=UserSession)
+async def set_notification_email(
+    body: SetNotificationEmailRequest,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session=Depends(get_async_session),
+):
+    """Set or replace the notification (secondary) email for the current user.
+
+    The notification email:
+    - Must be different from the account's primary email.
+    - Must not be used as a primary email by any other user.
+    - Must not be used as a notification email by any other user.
+    """
+    new_email = body.email.strip().lower()
+
+    if new_email == user.email.lower():
+        raise HTTPException(
+            status_code=422,
+            detail="Notification email must be different from your primary email.",
+        )
+
+    # Check it isn't already a primary email of another account
+    primary_clash = await session.execute(
+        select(UserModel).where(
+            UserModel.email == new_email,
+        )
+    )
+    if primary_clash.unique().scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="That email is already registered as a primary account email.",
+        )
+
+    # Check it isn't already a notification email of another account
+    notif_clash = await session.execute(
+        select(UserModel).where(
+            UserModel.notification_email == new_email,
+            UserModel.email != user.email.lower(),
+        )
+    )
+    if notif_clash.unique().scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="That email is already associated with another account.",
+        )
+
+    result = await session.execute(
+        select(UserModel).where(UserModel.email == user.email.lower())
+    )
+    db_user = result.unique().scalar_one_or_none()
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    db_user.notification_email = new_email
+    await session.commit()
+
+    return await get_current_session_user(user=user, session=session)
+
+
+@router.delete("/profile/notification-email", response_model=UserSession)
+async def remove_notification_email(
+    user: AuthenticatedUser = Depends(get_current_user),
+    session=Depends(get_async_session),
+):
+    """Remove the notification (secondary) email from the current user's account."""
+    result = await session.execute(
+        select(UserModel).where(UserModel.email == user.email.lower())
+    )
+    db_user = result.unique().scalar_one_or_none()
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    db_user.notification_email = None
+    await session.commit()
+
+    return await get_current_session_user(user=user, session=session)
+
+
+@router.post("/profile/set-password")
+async def set_password(
+    body: SetPasswordRequest,
+    user: AuthenticatedUser = Depends(get_current_user),
+    session=Depends(get_async_session),
+):
+    """Set a password for an account that currently has none (e.g. GitHub-only sign-in).
+
+    This endpoint only works when the account has no usable password.
+    Users who already have a password should use the forgot-password / reset
+    flow instead.
+    """
+    from app.auth import get_user_manager, UserUpdate
+    from app.db.db import get_user_db
+    from fastapi_users.db import SQLAlchemyUserDatabase
+    from app.db.models import OAuthAccount
+
+    result = await session.execute(
+        select(UserModel).where(UserModel.email == user.email.lower())
+    )
+    db_user = result.unique().scalar_one_or_none()
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    has_password = bool(db_user.hashed_password and db_user.hashed_password != "!")
+    if has_password:
+        raise HTTPException(
+            status_code=409,
+            detail="Your account already has a password. Use the forgot-password flow to change it.",
+        )
+
+    user_db = SQLAlchemyUserDatabase(session, UserModel, OAuthAccount)
+    async for manager in get_user_manager(user_db):
+        await manager.update(
+            UserUpdate(password=body.password),
+            db_user,
+            safe=True,
+        )
+
+    return {"success": True, "message": "Password set successfully. You can now log in with your email and password."}

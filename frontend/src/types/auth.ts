@@ -6,6 +6,9 @@ export interface User {
     picture?: string;
     role: UserRole;
     github_connected?: boolean;
+    username?: string | null;
+    notification_email?: string | null;
+    has_password?: boolean;
 }
 
 export interface AuthConfig {

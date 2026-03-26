@@ -1,10 +1,10 @@
 import { Suspense, lazy, useDeferredValue, useEffect, useRef, useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, Link } from 'react-router-dom';
 import type { User, AuthConfig } from './types/auth';
 import { Button } from '@/components/ui/button';
 import { Toaster, toast } from 'sonner';
 import { Input } from '@/components/ui/input';
-import { Search, Bell, Github, LogOut, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Search, Bell, Github, LogOut, CheckCircle2, AlertCircle, Settings } from 'lucide-react';
 import { ApiHttpError, fetchApi, fetchJson } from '@/lib/api';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Badge } from '@/components/ui/badge';
@@ -27,6 +27,9 @@ const VerifyEmailPage = lazy(() =>
 );
 const InviteAcceptPage = lazy(() =>
     import('./pages/InviteAcceptPage').then((module) => ({ default: module.InviteAcceptPage }))
+);
+const ProfilePage = lazy(() =>
+    import('./pages/ProfilePage').then((module) => ({ default: module.ProfilePage }))
 );
 
 function RouteFallback() {
@@ -470,8 +473,20 @@ function App() {
                                                         </div>
                                                     )}
 
-                                                    {/* Logout */}
+                                                    {/* Account settings & logout */}
                                                     <div className="px-4 py-2">
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="sm"
+                                                            className="w-full justify-start text-muted-foreground hover:text-foreground"
+                                                            asChild
+                                                            onClick={() => setProfileOpen(false)}
+                                                        >
+                                                            <Link to="/profile">
+                                                                <Settings className="h-4 w-4 mr-2" />
+                                                                Account Settings
+                                                            </Link>
+                                                        </Button>
                                                         <Button
                                                             variant="ghost"
                                                             size="sm"
@@ -533,6 +548,22 @@ function App() {
                         <Suspense fallback={<RouteFallback />}>
                             <InviteAcceptPage />
                         </Suspense>
+                    }
+                />
+                <Route
+                    path="/profile"
+                    element={
+                        user ? (
+                            <Suspense fallback={<RouteFallback />}>
+                                <ProfilePage
+                                    user={user}
+                                    onUserUpdate={setUser}
+                                    githubClientId={authConfig?.github_client_id}
+                                />
+                            </Suspense>
+                        ) : (
+                            <Navigate to="/" replace />
+                        )
                     }
                 />
                 <Route path="*" element={<Navigate to="/" replace />} />
