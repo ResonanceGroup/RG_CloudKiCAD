@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 
 class UserRead(schemas.BaseUser[uuid.UUID]):
     role: str
+    username: Optional[str] = None
+    display_name: Optional[str] = None
+    notification_email: Optional[str] = None
 
 
 class UserCreate(schemas.BaseUserCreate):
@@ -48,7 +51,9 @@ class UserCreate(schemas.BaseUserCreate):
 
 
 class UserUpdate(schemas.BaseUserUpdate):
-    pass
+    username: Optional[str] = None
+    display_name: Optional[str] = None
+    notification_email: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +319,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
                 detail="Your account is pending admin approval. You will be notified when access is granted.",
             )
 
-        name = user.email.split("@")[0]
+        name = user.display_name or user.username or user.email.split("@")[0]
         token = create_session_token(email=user.email, name=name, picture="", role=role)
         set_session_cookie(response, token)
 

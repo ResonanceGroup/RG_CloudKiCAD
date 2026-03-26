@@ -28,6 +28,19 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
         String, nullable=True, default=None
     )
 
+    # Profile fields
+    username: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True, default=None, unique=True
+    )
+    display_name: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True, default=None
+    )
+    # Secondary email for notifications (may differ from primary/GitHub email).
+    # Must be globally unique across both primary emails and notification emails.
+    notification_email: Mapped[Optional[str]] = mapped_column(
+        String(254), nullable=True, default=None, unique=True
+    )
+
     oauth_accounts: Mapped[list["OAuthAccount"]] = relationship(
         "OAuthAccount", lazy="joined"
     )
