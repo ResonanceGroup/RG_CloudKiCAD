@@ -198,6 +198,8 @@ app = FastAPI(title="KiCAD Prism API", lifespan=lifespan)
 if settings.APP_URL:
     _oauth_success_url = (settings.APP_URL.rstrip("/") + "/").encode()
     _oauth_denied_url = (settings.APP_URL.rstrip("/") + "/?login_error=access_denied").encode()
+    _oauth_link_success_url = (settings.APP_URL.rstrip("/") + "/profile").encode()
+    _oauth_link_error_url = (settings.APP_URL.rstrip("/") + "/profile?link_error=failed").encode()
 
     class _OAuthCallbackRedirectMiddleware:
         _PATH = "/api/auth/github/callback"
@@ -244,6 +246,58 @@ if settings.APP_URL:
 
             await self.app(scope, receive, capture_send)
 
+    class _OAuthAssociateCallbackRedirectMiddleware:
+        """Convert the JSON 200 from the associate callback into a browser redirect.
+
+        On success (200) the user is sent back to /profile.
+        On any error (4xx / 5xx) the user is sent to /profile?link_error=failed
+        so the frontend can show a friendly message.
+        """
+        _PATH = "/api/auth/github/link/callback"
+
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if not (scope["type"] == "http" and scope.get("path") == self._PATH):
+                await self.app(scope, receive, send)
+                return
+
+            captured_status: list = []
+
+            async def capture_send(message):
+                if message["type"] == "http.response.start":
+                    status = message["status"]
+                    captured_status.append(status)
+                    if status == 200:
+                        # Association succeeded — redirect to profile, preserving cookies.
+                        await send({
+                            "type": "http.response.start",
+                            "status": 302,
+                            "headers": list(message.get("headers", [])) + [
+                                (b"location", _oauth_link_success_url),
+                            ],
+                        })
+                    elif status >= 400:
+                        # Any error — redirect to profile with error flag.
+                        await send({
+                            "type": "http.response.start",
+                            "status": 302,
+                            "headers": [(b"location", _oauth_link_error_url)],
+                        })
+                    else:
+                        await send(message)
+                elif message["type"] == "http.response.body":
+                    if captured_status and (captured_status[0] == 200 or captured_status[0] >= 400):
+                        await send({"type": "http.response.body", "body": b"", "more_body": False})
+                    else:
+                        await send(message)
+                else:
+                    await send(message)
+
+            await self.app(scope, receive, capture_send)
+
+    app.add_middleware(_OAuthAssociateCallbackRedirectMiddleware)
     app.add_middleware(_OAuthCallbackRedirectMiddleware)
 
 # Trust proxy headers for real client IP forwarding.
@@ -332,5 +386,30 @@ app.include_router(
         is_verified_by_default=True,
     ),
     prefix="/api/auth/github",
+    tags=["auth"],
+)
+
+# ---------------------------------------------------------------------------
+# fastapi-users: GitHub OAuth account-association router
+# ---------------------------------------------------------------------------
+# Used by already-authenticated users who want to link their GitHub account
+# to their existing email/password account.  Unlike the login router above,
+# this router requires a valid fastapi-users session cookie and always links
+# the GitHub OAuth account to the currently authenticated user — regardless
+# of whether the GitHub email matches the account email.
+_github_link_callback_url = (
+    f"{settings.APP_URL.rstrip('/')}/api/auth/github/link/callback"
+    if settings.APP_URL
+    else None
+)
+app.include_router(
+    fastapi_users_instance.get_oauth_associate_router(
+        github_oauth_client,
+        UserRead,
+        settings.SESSION_SECRET,
+        redirect_url=_github_link_callback_url,
+        csrf_token_cookie_secure=settings.SESSION_COOKIE_SECURE,
+    ),
+    prefix="/api/auth/github/link",
     tags=["auth"],
 )

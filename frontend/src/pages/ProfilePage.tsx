@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -16,6 +16,15 @@ interface ProfilePageProps {
 
 export function ProfilePage({ user, onUserUpdate, githubClientId }: ProfilePageProps) {
     const navigate = useNavigate();
+    const [searchParams, setSearchParams] = useSearchParams();
+
+    // Show a toast if GitHub linking failed and clean up the URL.
+    useEffect(() => {
+        if (searchParams.get('link_error')) {
+            toast.error('Failed to link GitHub account. Please try again.');
+            setSearchParams({}, { replace: true });
+        }
+    }, [searchParams, setSearchParams]);
 
     // Username / display name
     const [username, setUsername] = useState(user.username ?? '');
@@ -149,9 +158,12 @@ export function ProfilePage({ user, onUserUpdate, githubClientId }: ProfilePageP
     };
 
     const handleConnectGitHub = async () => {
-        const redirectUrl = encodeURIComponent(window.location.origin + '/profile');
         try {
-            const res = await fetch(`/api/auth/github/authorize?redirect_url=${redirectUrl}`);
+            const res = await fetch(`/api/auth/github/link/authorize`);
+            if (!res.ok) {
+                toast.error('Failed to start GitHub connect flow');
+                return;
+            }
             const data = await res.json() as { authorization_url: string };
             window.location.href = data.authorization_url;
         } catch {

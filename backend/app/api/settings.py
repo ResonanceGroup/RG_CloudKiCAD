@@ -9,14 +9,14 @@ import subprocess
 from pathlib import Path
 from pydantic import BaseModel
 import logging
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.roles import Role, normalize_role
 from app.core.security import AuthenticatedUser, require_admin
 from app.db.db import get_async_session
-from app.db.models import User
+from app.db.models import ProjectAccessRequest, ProjectInvite, ProjectMembership, User
 from app.services import access_service
 
 # Configure logging
@@ -288,7 +288,12 @@ async def delete_user(
     caller: AuthenticatedUser = Depends(require_admin),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """Permanently delete a user account and revoke any role assignment."""
+    """Permanently delete a user account and all associated data.
+
+    Deletion is blocked when the target user is the sole explicit admin of
+    any project.  The caller must first assign another admin to those
+    projects before retrying.
+    """
     normalized = email.strip().lower()
     if normalized == caller.email.strip().lower():
         raise HTTPException(status_code=400, detail="You cannot delete your own account.")
@@ -296,8 +301,76 @@ async def delete_user(
     user = result.unique().scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    # Remove role assignment if present
-    access_service.delete_user_role(normalized, caller.email)
+
+    # ------------------------------------------------------------------
+    # Guard: block if user is the sole explicit admin of any project.
+    # ------------------------------------------------------------------
+    admin_project_rows = await session.execute(
+        select(ProjectMembership.project_id).where(
+            ProjectMembership.user_email == normalized,
+            ProjectMembership.project_role == "admin",
+        )
+    )
+    admin_project_ids = [row[0] for row in admin_project_rows.all()]
+
+    sole_admin_projects: list[str] = []
+    for project_id in admin_project_ids:
+        other_admin_count = await session.scalar(
+            select(func.count(ProjectMembership.id)).where(
+                ProjectMembership.project_id == project_id,
+                ProjectMembership.project_role == "admin",
+                ProjectMembership.user_email != normalized,
+            )
+        )
+        if (other_admin_count or 0) == 0:
+            sole_admin_projects.append(project_id)
+
+    if sole_admin_projects:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    "User is the sole admin of one or more projects. "
+                    "Assign another admin to each project before deleting this user."
+                ),
+                "sole_admin_projects": sole_admin_projects,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Remove RBAC role assignment (ignore if not present or already gone).
+    # ------------------------------------------------------------------
+    try:
+        access_service.delete_user_role(normalized, caller.email)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("Unexpected error removing role for %s: %s", normalized, exc)
+        raise
+
+    # ------------------------------------------------------------------
+    # Remove from pending-approvals queue (no-op if not there).
+    # ------------------------------------------------------------------
+    try:
+        access_service.remove_pending_user(normalized)
+    except Exception as exc:
+        logger.warning("Could not remove pending user entry for %s: %s", normalized, exc)
+
+    # ------------------------------------------------------------------
+    # Delete per-project rows that reference this user's email.
+    # ------------------------------------------------------------------
+    await session.execute(
+        delete(ProjectMembership).where(ProjectMembership.user_email == normalized)
+    )
+    await session.execute(
+        delete(ProjectAccessRequest).where(ProjectAccessRequest.user_email == normalized)
+    )
+    await session.execute(
+        delete(ProjectInvite).where(ProjectInvite.invited_email == normalized)
+    )
+
+    # Delete the user; cascade="all, delete-orphan" on User.oauth_accounts
+    # ensures OAuthAccount rows are removed automatically.
     await session.delete(user)
     await session.commit()
     return {"deleted": normalized}
