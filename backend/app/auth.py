@@ -12,6 +12,7 @@ same cookie in ``on_after_login`` so the existing RBAC guards in
 """
 
 import logging
+import re
 import smtplib
 import uuid
 from email.mime.multipart import MIMEMultipart
@@ -24,6 +25,7 @@ from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
 from fastapi_users.db import SQLAlchemyUserDatabase
 from httpx_oauth.clients.github import GitHubOAuth2
+from sqlalchemy import func, select
 
 from app.core.config import settings
 from app.core.encryption import decrypt_token, encrypt_token
@@ -33,6 +35,9 @@ from app.db.models import User
 from app.services import access_service
 
 logger = logging.getLogger(__name__)
+
+# Username validation pattern (shared with api/auth.py)
+_USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.\-]{3,50}$")
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +52,7 @@ class UserRead(schemas.BaseUser[uuid.UUID]):
 
 
 class UserCreate(schemas.BaseUserCreate):
-    pass
+    username: Optional[str] = None
 
 
 class UserUpdate(schemas.BaseUserUpdate):
@@ -197,6 +202,27 @@ async def _check_github_org_membership(access_token: str) -> None:
         )
 
 
+async def _fetch_github_user_info(access_token: str) -> dict:
+    """Fetch the authenticated user's info from the GitHub API.
+
+    Returns an empty dict when the request fails so callers can gracefully
+    degrade rather than blocking the login flow.
+    """
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get("https://api.github.com/user", headers=headers)
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception as exc:
+        logger.warning("Failed to fetch GitHub user info: %s", exc)
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # UserManager
 # ---------------------------------------------------------------------------
@@ -204,6 +230,30 @@ async def _check_github_org_membership(access_token: str) -> None:
 class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     reset_password_token_secret = settings.SESSION_SECRET
     verification_token_secret = settings.SESSION_SECRET
+
+    async def create(
+        self,
+        user_create: UserCreate,  # type: ignore[override]
+        safe: bool = False,
+        request: Optional[Request] = None,
+    ) -> User:
+        """Override create to validate and persist a username supplied at registration."""
+        username: Optional[str] = getattr(user_create, "username", None)
+        if username:
+            username = username.strip()
+            if not _USERNAME_RE.match(username):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Username must be 3–50 characters and contain only letters, numbers, underscores, hyphens, or dots.",
+                )
+            # Case-insensitive uniqueness check
+            existing = await self.user_db.session.execute(
+                select(User).where(func.lower(User.username) == username.lower())
+            )
+            if existing.unique().scalar_one_or_none() is not None:
+                raise HTTPException(status_code=409, detail="Username is already taken.")
+
+        return await super().create(user_create, safe=safe, request=request)
 
     async def on_after_register(
         self, user: User, request: Optional[Request] = None
@@ -360,6 +410,28 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
                 user = await self.user_db.update(user, {"github_access_token_encrypted": encrypted})
             # GitHub org members are auto-promoted to designer
             _auto_assign_github_designer(account_email)
+
+            # Fetch the GitHub login (username) and try to store it.
+            # If the login isn't taken yet, also set it as the in-app username.
+            github_info = await _fetch_github_user_info(access_token)
+            github_login: Optional[str] = github_info.get("login") or None
+            if github_login:
+                updates: dict = {"github_username": github_login}
+                # Only set the in-app username if the user doesn't have one yet.
+                if not user.username:
+                    # Case-insensitive check: if no other user has the same login
+                    clash = await self.user_db.session.execute(
+                        select(User).where(
+                            func.lower(User.username) == github_login.lower(),
+                            User.email != account_email.lower(),
+                        )
+                    )
+                    if clash.unique().scalar_one_or_none() is None:
+                        updates["username"] = github_login
+                try:
+                    user = await self.user_db.update(user, updates)
+                except Exception as exc:
+                    logger.warning("Could not update GitHub username for %s: %s", account_email, exc)
         elif _is_domain_whitelisted(account_email):
             _auto_approve_in_rbac(account_email)
 

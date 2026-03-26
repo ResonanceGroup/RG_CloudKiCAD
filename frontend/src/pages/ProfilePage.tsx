@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { Github, CheckCircle2, AlertCircle, ArrowLeft, User as UserIcon, Mail, Lock, AtSign } from 'lucide-react';
+import { Github, CheckCircle2, AlertCircle, ArrowLeft, User as UserIcon, Mail, Lock, AtSign, RefreshCw } from 'lucide-react';
 import { fetchJson, fetchApi, readApiError } from '@/lib/api';
 import type { User } from '../types/auth';
 
@@ -30,6 +30,9 @@ export function ProfilePage({ user, onUserUpdate, githubClientId }: ProfilePageP
     const [newPassword, setNewPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [passwordSaving, setPasswordSaving] = useState(false);
+
+    // Reset password (email link for accounts that already have a password)
+    const [resetLinkSending, setResetLinkSending] = useState(false);
 
     // Keep form in sync if the parent refreshes the user object
     useEffect(() => {
@@ -126,6 +129,22 @@ export function ProfilePage({ user, onUserUpdate, githubClientId }: ProfilePageP
             toast.error(msg);
         } finally {
             setPasswordSaving(false);
+        }
+    };
+
+    const handleSendResetLink = async () => {
+        setResetLinkSending(true);
+        try {
+            await fetchApi('/api/auth/email/forgot-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: user.email }),
+            });
+            toast.success('Password reset link sent — check your inbox.');
+        } catch {
+            toast.error('Failed to send reset link. Please try again.');
+        } finally {
+            setResetLinkSending(false);
         }
     };
 
@@ -351,9 +370,17 @@ export function ProfilePage({ user, onUserUpdate, githubClientId }: ProfilePageP
                             <span className="text-sm">Password is set</span>
                         </div>
                         <p className="text-sm text-muted-foreground">
-                            To change your password, use the <strong>Forgot Password</strong> flow on the login
-                            page. A reset link will be sent to your primary email.
+                            Send a reset link to your primary email to change your password.
                         </p>
+                        <Button
+                            variant="outline"
+                            onClick={handleSendResetLink}
+                            disabled={resetLinkSending}
+                            className="w-full sm:w-auto"
+                        >
+                            <RefreshCw className={`h-4 w-4 mr-2 ${resetLinkSending ? 'animate-spin' : ''}`} />
+                            {resetLinkSending ? 'Sending…' : 'Send Reset Link'}
+                        </Button>
                     </section>
                 )}
             </main>

@@ -123,6 +123,7 @@ async def _migrate_user_profile_columns() -> None:
         ("username", "VARCHAR(50)"),
         ("display_name", "VARCHAR(100)"),
         ("notification_email", "VARCHAR(254)"),
+        ("github_username", "VARCHAR(50)"),
     ]
     async with engine.begin() as conn:
         for col_name, col_type in new_columns:
