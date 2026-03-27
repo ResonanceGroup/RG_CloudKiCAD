@@ -1,5 +1,5 @@
 export interface ApiErrorPayload {
-  detail?: string;
+  detail?: string | Record<string, unknown>;
   message?: string;
 }
 
@@ -39,7 +39,14 @@ export async function fetchApi(input: RequestInfo | URL, init?: RequestInit): Pr
 export async function readApiError(response: Response, fallback: string): Promise<string> {
   try {
     const payload = (await response.json()) as ApiErrorPayload;
-    return payload.detail || payload.message || fallback;
+    const detail = payload.detail;
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail === "object") {
+      // Structured detail — prefer the nested "message" field.
+      const nested = detail as Record<string, unknown>;
+      if (typeof nested.message === "string") return nested.message;
+    }
+    return payload.message || fallback;
   } catch {
     return fallback;
   }

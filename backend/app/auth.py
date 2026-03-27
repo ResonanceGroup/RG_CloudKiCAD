@@ -437,6 +437,70 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
 
         return user
 
+    async def oauth_associate_callback(
+        self,
+        user: User,
+        oauth_name: str,
+        access_token: str,
+        account_id: str,
+        account_email: str,
+        expires_at: Optional[int] = None,
+        refresh_token: Optional[str] = None,
+        request: Optional[Request] = None,
+    ) -> User:
+        """Intercept the OAuth-associate callback to apply GitHub-specific
+        post-link logic (identical to the post-login logic in oauth_callback).
+        """
+        user = await super().oauth_associate_callback(
+            user,
+            oauth_name,
+            access_token,
+            account_id,
+            account_email,
+            expires_at,
+            refresh_token,
+            request,
+        )
+
+        if oauth_name == "github":
+            encrypted = encrypt_token(access_token)
+            updates: dict = {}
+            if encrypted is not None:
+                updates["github_access_token_encrypted"] = encrypted
+
+            # Fetch the GitHub login and try to set it as the in-app username.
+            github_info = await _fetch_github_user_info(access_token)
+            github_login: Optional[str] = github_info.get("login") or None
+            if github_login:
+                updates["github_username"] = github_login
+                if not user.username:
+                    clash = await self.user_db.session.execute(
+                        select(User).where(
+                            func.lower(User.username) == github_login.lower(),
+                            User.email != user.email,
+                        )
+                    )
+                    if clash.unique().scalar_one_or_none() is None:
+                        updates["username"] = github_login
+
+            if updates:
+                try:
+                    user = await self.user_db.update(user, updates)
+                except Exception as exc:
+                    logger.warning(
+                        "Could not update GitHub info after account link for %s: %s",
+                        user.email,
+                        exc,
+                    )
+
+            _auto_assign_github_designer(user.email)
+
+        return user
+
+
+# ---------------------------------------------------------------------------
+# UserManager dependency
+# ---------------------------------------------------------------------------
 
 async def get_user_manager(user_db: SQLAlchemyUserDatabase = Depends(get_user_db)):
     yield UserManager(user_db)
