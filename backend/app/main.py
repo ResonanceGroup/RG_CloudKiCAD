@@ -127,14 +127,21 @@ async def _migrate_user_profile_columns() -> None:
         ("github_email", "VARCHAR(254)"),
     ]
     async with engine.begin() as conn:
+        # Check which columns already exist
+        result = await conn.execute(text("PRAGMA table_info(user)"))
+        existing_columns = {row[1] for row in result.fetchall()}
+        
         for col_name, col_type in new_columns:
+            if col_name in existing_columns:
+                logger.debug(f"Column {col_name} already exists, skipping")
+                continue
             try:
                 # col_name and col_type come from the hardcoded list above (no user input),
                 # so this f-string is safe from SQL injection.
                 await conn.execute(text(f"ALTER TABLE user ADD COLUMN {col_name} {col_type}"))
                 logger.info("DB migration: added column '%s' to user table", col_name)
-            except Exception:
-                pass  # Column already exists — this is the expected path after the first run
+            except Exception as e:
+                logger.warning(f"Failed to add column {col_name}: {e}")
 
 
 async def ensure_admin_user() -> None:

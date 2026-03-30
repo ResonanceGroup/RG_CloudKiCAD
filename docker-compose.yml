@@ -1,55 +1,70 @@
+version: '3.8'
+
 services:
-  backend:
-    build: ./backend
-    container_name: kicad-prism-backend
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kicad-prism
     restart: unless-stopped
     ports:
-      - "${BACKEND_PORT:-8000}:${BACKEND_PORT:-8000}"
+      - "${PORT:-8080}:80"
     volumes:
       # Mount projects directory for persistence
       - ./data/projects:/app/projects
-      # Mount SSH directory for Git persistence (GitLab/GitHub SSH)
+      # Mount SSH directory for Git persistence
       - ./data/ssh:/root/.ssh:rw
       # Persist user database
       - ./data/users.db:/app/users.db
     environment:
+      # ========== Container Settings ==========
       - PYTHONUNBUFFERED=1
-      # Root directory for storing projects
       - KICAD_PROJECTS_ROOT=/app/projects
-      # Friendly workspace name shown on login page
+      - DEV_MODE=false
+      - BACKEND_HOST=0.0.0.0
+      - BACKEND_PORT=8000
+      # ========== Application Settings ==========
       - WORKSPACE_NAME=${WORKSPACE_NAME:-KiCAD Prism}
-      # Google OAuth Configuration (required for authentication)
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - APP_URL=${APP_URL:-http://localhost:8080}
+      - AUTH_ENABLED=${AUTH_ENABLED:-true}
+      # ========== Admin & Access Control ==========
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - BOOTSTRAP_ADMIN_USERS_STR=${BOOTSTRAP_ADMIN_USERS_STR:-}
       - ALLOWED_USERS_STR=${ALLOWED_USERS_STR:-}
       - ALLOWED_DOMAINS_STR=${ALLOWED_DOMAINS_STR:-}
-      - BOOTSTRAP_ADMIN_USERS_STR=${BOOTSTRAP_ADMIN_USERS_STR:-}
+      - ALLOWED_EMAIL_DOMAINS_STR=${ALLOWED_EMAIL_DOMAINS_STR:-}
       - ROLE_STORE_PATH=${ROLE_STORE_PATH:-}
+      # ========== Session Management ==========
       - SESSION_SECRET=${SESSION_SECRET:-}
       - SESSION_TTL_HOURS=${SESSION_TTL_HOURS:-12}
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
-      # Set to false to disable authentication entirely
-      - AUTH_ENABLED=${AUTH_ENABLED:-true}
-      # Development mode (set to false for production/bundling)
-      - DEV_MODE=false
-      # Backend host/port (container always binds on all interfaces)
-      - BACKEND_HOST=${BACKEND_HOST:-0.0.0.0}
-      - BACKEND_PORT=${BACKEND_PORT:-8000}
-      # GitHub Token for private repository access (optional)
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      # GitHub OAuth for org-scoped login
+      # ========== Google OAuth ==========
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      # ========== GitHub OAuth ==========
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
       - GITHUB_ORG_LOGIN=${GITHUB_ORG_LOGIN:-}
-      # Encryption key for stored OAuth tokens (required when GitHub OAuth is enabled)
+      - GITHUB_SCOPES=${GITHUB_SCOPES:-read:org,user:email}
+      # ========== GitHub App ==========
+      - GITHUB_APP_ID=${GITHUB_APP_ID:-}
+      - GITHUB_APP_PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY:-}
+      - GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID:-}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
       - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY:-}
-
-  frontend:
-    build: ./frontend
-    container_name: kicad-prism-frontend
-    restart: unless-stopped
-    ports:
-      - "8080:80"
-    environment:
-      - BACKEND_PORT=${BACKEND_PORT:-8000}
-    depends_on:
-      - backend
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      # ========== Email / SMTP ==========
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - SMTP_TLS=${SMTP_TLS:-true}
+      # ========== Other ==========
+      - COMMENTS_API_BASE_URL=${COMMENTS_API_BASE_URL:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/", "&&", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

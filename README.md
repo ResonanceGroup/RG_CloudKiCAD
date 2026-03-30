@@ -1,8 +1,30 @@
 #RG Cloud KiCAD
 
+> **🐳 Unified Docker Image** • Single `.env` file • One command deployment • Dev = Production workflow
+
 RG Cloud KiCAD is a web platform for browsing, reviewing, and operating on KiCad repositories from the browser. It combines a FastAPI backend, a React/Vite frontend, repository import/sync flows, RBAC-based access control, comments export helpers, and manufacturing/documentation workflows in one workspace.
 
+**Key Features**:
+- Single Docker image with both frontend and backend
+- One `.env` file for all configuration
+- Identical development and production workflow
+- Multi-architecture support (amd64/arm64)
+- Includes KiCAD 9 with Python bindings
+
 ![KiCAD Prism Home Page](assets/KiCAD-Prism-Login-Page.png)
+
+## Table of Contents
+
+- [Core Capabilities](#core-capabilities)
+- [Architecture](#architecture)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Authentication](#authentication)
+- [Project Access Control](#project-access-control)
+- [Documentation](#documentation)
+- [Repository Layout](#repository-layout)
+- [Acknowledgements](#acknowledgements)
+- [License](#license)
 
 ## Core Capabilities
 
@@ -60,113 +82,163 @@ RG Cloud KiCAD is a web platform for browsing, reviewing, and operating on KiCad
 
 ## Architecture
 
-- Frontend: React, TypeScript, Vite, Tailwind, shadcn/ui
-- Backend: FastAPI, GitPython, Pydantic Settings
-- Storage:
-  - imported repositories under `data/projects`
-  - SSH material under `data/ssh`
-  - user accounts, OAuth tokens, project memberships, invites, and access requests in `data/users.db` (SQLite)
-  - system role assignments in `.rbac_roles.json`
-  - folder metadata in `.folders.json`
-  - comments in SQLite plus optional `.comments/comments.json` export
-- Runtime split:
-  - Docker frontend serves the production bundle on port `8080`
-  - backend API serves on port `8000`
+### Unified Container Design
+
+KiCAD Prism uses a **single Docker image** containing both frontend and backend services. Both run in the same container, managed by supervisor:
+
+- **Frontend** (nginx on port 80): Serves the React build and proxies API requests
+- **Backend** (uvicorn on port 8000): FastAPI application handling all business logic 
+- **Communication**: nginx ➜ `localhost:8000` ➜ FastAPI (internal to container)
+- **External access**: Single port configurable via `PORT` in `.env` (default: 8080)
+
+### Technology Stack
+- **Frontend**: React, TypeScript, Vite, Tailwind CSS, shadcn/ui
+- **Backend**: FastAPI, Python 3, GitPython, Pydantic Settings, SQLAlchemy
+- **Database**: SQLite (users, OAuth tokens, memberships, invites, access requests)  
+- **Container**: Ubuntu-based with KiCAD 9, nginx, Python, supervisor
+- **Deployment**: Single image via docker-compose (amd64/arm64 support)
+
+### Storage (Persisted)
+- **Project repositories**: `data/projects/` (organized by type)
+- **SSH keys**: `data/ssh/` (for Git operations)
+- **User database**: `data/users.db` (SQLite)
+- **System roles**: `.rbac_roles.json` in projects root
+- **Folder metadata**: `.folders.json` in projects root
+- **Comments**: SQLite with optional `.comments/comments.json` export
+
+### Why One Container?
+
+**Simplicity**: One image, one command, one `.env` file  
+**Consistency**: Development workflow identical to production  
+**No networking complexity**: Services communicate via localhost  
+**Easier deployment**: Single container to manage and monitor
 
 ## Quick Start
 
-### Docker
+> **📖 Detailed guide: [docs/QUICKSTART.md](docs/QUICKSTART.md)**
+
+### 1. Setup
 
 ```bash
-git clone
+# Clone repository
+git clone <repository-url>
 cd KiCAD-Prism
+
+# Copy and configure environment
 cp .env.example .env
+# Edit .env with your settings
 ```
 
-Guest mode (no authentication):
+### 2. Configure `.env`
 
+**Minimum required settings**:
 ```env
-AUTH_ENABLED=false
-```
+# Port (where to access the app)
+PORT=8080
 
-Email/password login:
+# Application URL (for emails and OAuth callbacks)
+APP_URL=http://localhost:8080
 
-```env
-AUTH_ENABLED=true
+# Admin account
 ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=change-me-to-a-strong-password
-SESSION_SECRET=replace-with-a-long-random-secret
-APP_URL=http://localhost:5173
-```
+ADMIN_PASSWORD=your-secure-password
 
-Google OAuth login:
+# Session security
+SESSION_SECRET=generate-a-random-secret
 
-```env
+# Authentication
 AUTH_ENABLED=true
-GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-SESSION_SECRET=replace-with-a-long-random-secret
-BOOTSTRAP_ADMIN_USERS_STR=admin@example.com
-SESSION_COOKIE_SECURE=false
 ```
 
-GitHub OAuth login (requires a GitHub OAuth App):
-
+**Optional GitHub OAuth** (recommended):
 ```env
-AUTH_ENABLED=true
-GITHUB_CLIENT_ID=your-github-oauth-client-id
-GITHUB_CLIENT_SECRET=your-github-oauth-client-secret
-GITHUB_ORG_LOGIN=your-github-org
-TOKEN_ENCRYPTION_KEY=   # generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-SESSION_SECRET=replace-with-a-long-random-secret
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=change-me-to-a-strong-password
-```
+GITHUB_CLIENT_ID=your-oauth-app-client-id
+GITHUB_CLIENT_SECRET=your-oauth-app-secret
+GITHUB_ORG_LOGIN=your-organization
+TOKEN_ENCRYPTION_KEY=generate-with-python
 
-Optionally, add the GitHub App for server-side repository access (see [Authentication](#authentication) for setup steps):
-
-```env
+# GitHub App (for repository operations)
 GITHUB_APP_ID=123456
-GITHUB_APP_PRIVATE_KEY=<base64-encoded-pem>
+GITHUB_APP_PRIVATE_KEY=base64-encoded-private-key
 GITHUB_APP_INSTALLATION_ID=12345678
-GITHUB_WEBHOOK_SECRET=<random-hex>
+GITHUB_WEBHOOK_SECRET=random-hex-string
 ```
 
-Start the stack:
+See `.env.example` for all options.
+
+### 3. Start the Application
 
 ```bash
-docker compose up --build -d
+# Build and start (first time)
+docker-compose up -d --build
+
+# View logs
+docker-compose logs -f
+
+# Access the app
+# Open http://localhost:8080 in your browser
 ```
 
-Open the UI at [http://127.0.0.1:8080](http://127.0.0.1:8080).
-
-Important:
-- `SESSION_SECRET` is required whenever auth is effectively enabled.
-- `SESSION_COOKIE_SECURE=true` should be used only behind HTTPS.
-- Docker Compose reads the root `.env` automatically.
-
-### Local Development
-
-Backend:
+### 4. Common Commands
 
 ```bash
-cd backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+# Start
+docker-compose up -d
+
+# Stop
+docker-compose down
+
+# Restart after config changes
+docker-compose restart
+
+# Rebuild after code changes
+docker-compose up -d --build
+
+# View logs
+docker-compose logs -f
+
+# Check status
+docker-compose ps
 ```
 
-Frontend in a second terminal:
+### That's It!
+
+Development and production use the same workflow. No separate dev setup needed.
+
+## Configuration
+
+### Single `.env` File
+
+All configuration is in one file: `.env` at the project root.
+
+**Key variables**:
+
+| Variable | Purpose | Example |
+|----------|---------|---------|  
+| `PORT` | Application port | `8080` |
+| `APP_URL` | Public URL | `https://prism.yourcompany.com` |
+| `ADMIN_EMAIL` | Bootstrap admin | `admin@example.com` |
+| `ADMIN_PASSWORD` | Admin password | `SecurePassword123!` |
+| `SESSION_SECRET` | Cookie signing key | (random string) |
+| `AUTH_ENABLED` | Enable authentication | `true` |
+| `GITHUB_CLIENT_ID` | GitHub OAuth App | (from GitHub) |
+| `GITHUB_APP_ID` | GitHub App | (from GitHub) |
+| `SMTP_HOST` | Email server | `mail.yourcompany.com` |
+
+See `.env.example` for complete list with documentation.
+
+### Generate Secrets
 
 ```bash
-cd frontend
-npm install
-npm run dev
+# SESSION_SECRET
+openssl rand -base64 32
+
+# TOKEN_ENCRYPTION_KEY (for GitHub OAuth)
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# GITHUB_WEBHOOK_SECRET
+python -c "import secrets; print(secrets.token_hex(32))"
 ```
-
-Frontend dev server runs on [http://127.0.0.1:5173](http://127.0.0.1:5173).
-
-By default, local development usually runs without auth because `DEV_MODE=true` and no Google client ID is configured.
 
 ## Authentication
 
@@ -275,26 +347,62 @@ Bootstrap admins and system-level `admin` users always receive implicit `admin` 
 - **Invite by email**: Project managers/admins send time-limited email invites. Invites can be accepted or declined and are automatically revoked when a replacement invite is sent.
 - **Direct add**: Project managers/admins can directly add or update members by email address.
 
-## Project Documentation
+## Documentation
 
-- Deployment and hosting: [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md)
-- Repository layout expectations: [docs/KICAD-PRJ-REPO-STRUCTURE.md](./docs/KICAD-PRJ-REPO-STRUCTURE.md)
-- Path mapping and `.prism.json`: [docs/PATH-MAPPING.md](./docs/PATH-MAPPING.md)
-- Display names and project metadata: [docs/CUSTOM_PROJECT_NAMES.md](./docs/CUSTOM_PROJECT_NAMES.md)
-- Comments export and REST helpers: [docs/COMMENTS-COLLAB-UPDATES.md](./docs/COMMENTS-COLLAB-UPDATES.md)
-- Workspace behavior notes: [docs/WORKSPACE_UX_IMPROVEMENTS.md](./docs/WORKSPACE_UX_IMPROVEMENTS.md)
-- Visualizer vendor sync notes: [docs/ECAD_VIEWER_SYNC_NOTES.md](./docs/ECAD_VIEWER_SYNC_NOTES.md)
+### Getting Started
+- **Quick Start Guide**: [docs/QUICKSTART.md](./docs/QUICKSTART.md) - One-page setup guide
+- **Production deployment**: [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) - Hosting and production best practices
+
+### Project Configuration  
+- **Repository structure**: [docs/KICAD-PRJ-REPO-STRUCTURE.md](./docs/KICAD-PRJ-REPO-STRUCTURE.md) - Expected repository layout
+- **Path mapping**: [docs/PATH-MAPPING.md](./docs/PATH-MAPPING.md) - `.prism.json` configuration
+- **Custom project names**: [docs/CUSTOM_PROJECT_NAMES.md](./docs/CUSTOM_PROJECT_NAMES.md) - Display names and metadata
+
+### Features & Collaboration
+- **Comments & collaboration**: [docs/COMMENTS-COLLAB-UPDATES.md](./docs/COMMENTS-COLLAB-UPDATES.md) - Export and REST helpers
+- **Workspace UX**: [docs/WORKSPACE_UX_IMPROVEMENTS.md](./docs/WORKSPACE_UX_IMPROVEMENTS.md) - UI behavior notes
+- **Visualizer sync**: [docs/ECAD_VIEWER_SYNC_NOTES.md](./docs/ECAD_VIEWER_SYNC_NOTES.md) - Vendor component updates
 
 ## Repository Layout
 
 ```text
 KiCAD-Prism/
-├── backend/            # FastAPI backend
-├── frontend/           # React frontend
-├── docs/               # Project documentation
-├── assets/             # Screenshots and media for docs
-└── data/               # Runtime data in local/Docker use
+├── Dockerfile             # Unified multi-stage container (frontend + backend)
+├── .dockerignore          # Docker build exclusions
+├── docker-compose.yml     # Single unified service
+├── .env                   # Single configuration file (all settings)
+├── .env.example           # Configuration template
+├── docker/                # Container configuration
+│   ├── supervisord.conf  # Process manager (nginx + uvicorn)
+│   └── nginx.conf        # Nginx proxy configuration
+├── backend/               # FastAPI backend
+│   ├── app/              # Application code
+│   │   ├── api/          # API endpoints
+│   │   ├── core/         # Configuration, security, RBAC
+│   │   ├── db/           # Database models
+│   │   ├── schemas/      # JSON schemas
+│   │   └── services/     # Business logic
+│   └── requirements.txt  # Python dependencies
+├── frontend/              # React + Vite frontend
+│   ├── src/              # React components and pages
+│   ├── public/           # Static assets and viewer libraries
+│   └── package.json      # Node dependencies
+├── docs/                  # Project documentation
+│   ├── QUICKSTART.md     # One-page setup guide
+│   ├── DEPLOYMENT.md     # Production hosting guide
+│   └── *.md              # Feature and configuration docs
+├── assets/                # Screenshots and media
+└── data/                  # Runtime data (Docker volumes)
+    ├── projects/         # Imported KiCAD repositories
+    ├── ssh/              # SSH keys for Git
+    └── users.db          # SQLite user database
 ```
+
+### Key Files
+- **`Dockerfile`**: Multi-stage build that creates frontend bundle, then combines with backend in unified image
+- **`.env`**: Single source of truth for all configuration (port, credentials, features)
+- **`docker-compose.yml`**: Runs the unified container with volume mounts
+- **`docker/supervisord.conf`**: Manages nginx (frontend) and uvicorn (backend) processes
 
 ## Acknowledgements
 
